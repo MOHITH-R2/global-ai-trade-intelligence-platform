@@ -1,0 +1,65 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Runtime data, generated databases, and local state
+.runtime/
+.tmp/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+database/*.db
+database/*.sqlite*
+
+# Generated reports and exports
+reports/*.pdf
+reports/*.csv
+reports/*.xlsx
+reports/*.html
+exports/
+
+# Generated ML artifacts
+ml/*.joblib
+ml/*.pkl
+ml/*.pickle
+ml/*.onnx
+
+# Logs and process files
+*.log
+*.pid
+logs/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build/package outputs
+build/
+dist/
+*.egg-info/

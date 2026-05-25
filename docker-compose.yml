@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: .
+    command: python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      - ./.runtime:/app/.runtime
+      - ./reports:/app/reports
+
+  frontend:
+    build: .
+    command: python -m streamlit run frontend/app.py --server.port 8502 --server.address 0.0.0.0
+    ports:
+      - "8502:8502"
+    env_file:
+      - .env
+    environment:
+      API_BASE: http://backend:8001
+    depends_on:
+      - backend

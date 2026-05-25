@@ -1,0 +1,324 @@
+import asyncio
+import datetime
+import json
+import logging
+import math
+import os
+import ssl
+import threading
+from typing import Any
+from dotenv import load_dotenv
+
+load_dotenv()
+
+try:
+    import websockets
+except ImportError:  # pragma: no cover - handled by status output in app
+    websockets = None
+
+
+LOGGER = logging.getLogger(__name__)
+AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream"
+DEFAULT_BOUNDING_BOXES = [
+    [[0.7, 100.8], [1.8, 104.4]],       # Singapore / Malacca Strait
+    [[22.0, 113.0], [31.8, 123.8]],     # South China Sea / Shanghai
+    [[24.0, 51.0], [26.8, 57.5]],       # Gulf corridor / Dubai
+    [[32.8, -119.2], [34.3, -117.6]],   # Los Angeles
+    [[50.8, 2.5], [52.4, 5.3]],         # Rotterdam approaches
+]
+PORT_COORDS = {
+    "Shanghai": (31.2304, 121.4737),
+    "Singapore": (1.3521, 103.8198),
+    "Rotterdam": (51.9244, 4.4777),
+    "Los Angeles": (33.7182, -118.1957),
+    "Dubai": (25.2048, 55.2708),
+}
+FALLBACK_MANIFESTS = [
+    {"cargo": "Petrol", "tons": 82000, "value": "$74M", "class": "Energy"},
+    {"cargo": "Gold", "tons": 42, "value": "$2.7B", "class": "High value"},
+    {"cargo": "Electronics", "tons": 12800, "value": "$430M", "class": "Priority"},
+    {"cargo": "LNG", "tons": 91000, "value": "$118M", "class": "Energy"},
+    {"cargo": "Grain", "tons": 64000, "value": "$31M", "class": "Food"},
+    {"cargo": "Medical Supplies", "tons": 7200, "value": "$210M", "class": "Critical"},
+]
+
+AISSTREAM_LOCK = threading.Lock()
+AISSTREAM_STATE: dict[str, Any] = {
+    "running": False,
+    "connected": False,
+    "last_error": None,
+    "last_message_at": None,
+    "vessels": {},
+}
+
+
+def aisstream_enabled() -> bool:
+    return os.getenv("AIS_PROVIDER", "demo").strip().lower() == "aisstream" and bool(
+        os.getenv("AISSTREAM_API_KEY", "").strip()
+    )
+
+
+def insecure_ssl_allowed() -> bool:
+    app_mode = os.getenv("APP_MODE", "demo").strip().lower()
+    production_flag = os.getenv("PRODUCTION_MODE", "").strip().lower()
+    if app_mode in {"prod", "production"} or production_flag in {"1", "true", "yes", "on"}:
+        return False
+    return os.getenv("AISSTREAM_ALLOW_INSECURE_SSL", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _number(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _text(*values):
+    for value in values:
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value:
+            return value
+    return ""
+
+
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _nearest_port(lat: float, lon: float) -> str:
+    return min(PORT_COORDS, key=lambda port: abs(lat - PORT_COORDS[port][0]) + abs(lon - PORT_COORDS[port][1]))
+
+
+def _project_position(lat: float, lon: float, heading: float, nautical_miles: float = 120.0):
+    radians = math.radians(heading or 0)
+    lat_delta = math.cos(radians) * nautical_miles / 60
+    cos_lat = max(0.2, abs(math.cos(math.radians(lat))))
+    lon_delta = math.sin(radians) * nautical_miles / (60 * cos_lat)
+    return lat + lat_delta, lon + lon_delta
+
+
+def _manifest_for_mmsi(mmsi: str):
+    try:
+        index = int(mmsi) % len(FALLBACK_MANIFESTS)
+    except ValueError:
+        index = 0
+    return FALLBACK_MANIFESTS[index]
+
+
+def _bounding_boxes():
+    raw_boxes = os.getenv("AISSTREAM_BOUNDING_BOXES", "").strip()
+    if not raw_boxes:
+        return DEFAULT_BOUNDING_BOXES
+    try:
+        parsed = json.loads(raw_boxes)
+        if isinstance(parsed, list) and parsed:
+            return parsed
+    except json.JSONDecodeError as exc:
+        with AISSTREAM_LOCK:
+            AISSTREAM_STATE["last_error"] = f"Invalid AISSTREAM_BOUNDING_BOXES JSON: {exc}"
+    return DEFAULT_BOUNDING_BOXES
+
+
+def _max_vessels() -> int:
+    return int(_number(os.getenv("AISSTREAM_MAX_VESSELS"), 12) or 12)
+
+
+def _stale_seconds() -> int:
+    return int(_number(os.getenv("AISSTREAM_STALE_SECONDS"), 900) or 900)
+
+
+def _subscription_message():
+    message = {
+        "APIKey": os.getenv("AISSTREAM_API_KEY", "").strip(),
+        "BoundingBoxes": _bounding_boxes(),
+        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+    }
+    raw_mmsi = os.getenv("AISSTREAM_MMSI", "").strip()
+    if raw_mmsi:
+        message["FiltersShipMMSI"] = [item.strip() for item in raw_mmsi.split(",") if item.strip()]
+    return message
+
+
+def _trim_cache_locked():
+    vessels = AISSTREAM_STATE["vessels"]
+    cutoff = _utc_now().timestamp() - _stale_seconds()
+    stale_keys = [
+        mmsi
+        for mmsi, row in vessels.items()
+        if float(row.get("_last_signal_epoch", 0) or 0) < cutoff
+    ]
+    for mmsi in stale_keys:
+        vessels.pop(mmsi, None)
+    max_vessels = max(1, _max_vessels() * 4)
+    if len(vessels) > max_vessels:
+        newest = sorted(vessels.items(), key=lambda item: item[1].get("_last_signal_epoch", 0), reverse=True)
+        AISSTREAM_STATE["vessels"] = dict(newest[:max_vessels])
+
+
+def _handle_position_report(message: dict[str, Any]):
+    body = message.get("Message", {}).get("PositionReport", {})
+    metadata = message.get("Metadata") or message.get("MetaData") or {}
+    lat = _number(body.get("Latitude"), _number(metadata.get("Latitude")))
+    lon = _number(body.get("Longitude"), _number(metadata.get("Longitude")))
+    if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return
+
+    mmsi = _text(body.get("UserID"), metadata.get("MMSI"), metadata.get("UserID"))
+    if not mmsi:
+        return
+
+    now = _utc_now()
+    with AISSTREAM_LOCK:
+        existing = AISSTREAM_STATE["vessels"].get(mmsi, {})
+        name = _text(metadata.get("ShipName"), metadata.get("Name"), existing.get("name"), f"MMSI {mmsi}")
+        destination = _text(metadata.get("Destination"), metadata.get("DEST"), existing.get("ais_destination"))
+        speed = _number(body.get("Sog"), _number(metadata.get("Sog"), existing.get("speed_knots", 0))) or 0
+        cog = _number(body.get("Cog"), _number(metadata.get("Cog"), 0)) or 0
+        heading = _number(body.get("TrueHeading"), _number(metadata.get("Heading"), cog)) or cog
+        if heading in {360, 511}:
+            heading = cog
+        origin_port = _nearest_port(lat, lon)
+        destination_lat, destination_lon = _project_position(lat, lon, heading, max(30.0, min(220.0, (speed or 8) * 7)))
+        manifest = _manifest_for_mmsi(mmsi)
+
+        AISSTREAM_STATE["vessels"][mmsi] = {
+            **existing,
+            "id": mmsi,
+            "mmsi": mmsi,
+            "name": name,
+            "position_lat": round(lat, 5),
+            "position_lon": round(lon, 5),
+            "status": "active",
+            "route": f"{origin_port} AIS corridor",
+            "origin_port": origin_port,
+            "destination_port": destination or "Live AIS destination",
+            "origin_lat": PORT_COORDS[origin_port][0],
+            "origin_lon": PORT_COORDS[origin_port][1],
+            "destination_lat": round(destination_lat, 5),
+            "destination_lon": round(destination_lon, 5),
+            "ais_destination": destination,
+            "cargo": existing.get("cargo") or manifest["cargo"],
+            "cargo_class": existing.get("cargo_class") or manifest["class"],
+            "cargo_tons": existing.get("cargo_tons") or manifest["tons"],
+            "cargo_value": existing.get("cargo_value") or manifest["value"],
+            "cargo_source": existing.get("cargo_source") or "Inferred Demo Cargo",
+            "cargo_verified": bool(existing.get("cargo_verified", False)),
+            "progress": 0,
+            "speed_knots": round(speed, 1),
+            "eta_hours": None,
+            "heading": round(heading, 1),
+            "last_signal_at": now.isoformat(),
+            "source": "AISStream",
+            "_last_signal_epoch": now.timestamp(),
+        }
+        AISSTREAM_STATE["last_message_at"] = now.isoformat()
+        _trim_cache_locked()
+
+
+def _handle_static_data(message: dict[str, Any]):
+    body = message.get("Message", {}).get("ShipStaticData", {})
+    metadata = message.get("Metadata") or message.get("MetaData") or {}
+    mmsi = _text(body.get("UserID"), metadata.get("MMSI"), metadata.get("UserID"))
+    if not mmsi:
+        return
+    with AISSTREAM_LOCK:
+        existing = AISSTREAM_STATE["vessels"].get(mmsi, {"id": mmsi, "mmsi": mmsi})
+        name = _text(body.get("Name"), metadata.get("ShipName"), metadata.get("Name"), existing.get("name"))
+        destination = _text(body.get("Destination"), metadata.get("Destination"), existing.get("ais_destination"))
+        existing.update({
+            "name": name or existing.get("name", f"MMSI {mmsi}"),
+            "ais_destination": destination,
+        })
+        AISSTREAM_STATE["vessels"][mmsi] = existing
+
+
+def _handle_ais_message(raw_message: str):
+    try:
+        message = json.loads(raw_message)
+    except json.JSONDecodeError:
+        return
+
+    message_type = message.get("MessageType")
+    if message_type == "PositionReport":
+        _handle_position_report(message)
+    elif message_type == "ShipStaticData":
+        _handle_static_data(message)
+    elif message_type == "Error":
+        with AISSTREAM_LOCK:
+            AISSTREAM_STATE["last_error"] = str(message)
+
+
+async def _aisstream_loop():
+    if websockets is None:
+        with AISSTREAM_LOCK:
+            AISSTREAM_STATE["last_error"] = "Python package 'websockets' is not installed."
+        return
+
+    while aisstream_enabled():
+        try:
+            ssl_context = ssl._create_unverified_context() if insecure_ssl_allowed() else None
+            connect_kwargs = {"ping_interval": 20, "ping_timeout": 20}
+            if ssl_context is not None:
+                connect_kwargs["ssl"] = ssl_context
+            async with websockets.connect(AISSTREAM_URL, **connect_kwargs) as websocket:
+                await websocket.send(json.dumps(_subscription_message()))
+                with AISSTREAM_LOCK:
+                    AISSTREAM_STATE["connected"] = True
+                    AISSTREAM_STATE["last_error"] = None
+                async for raw_message in websocket:
+                    _handle_ais_message(raw_message)
+        except Exception as exc:  # pragma: no cover - depends on external service/network
+            LOGGER.warning("AISStream connection failed: %s", exc)
+            with AISSTREAM_LOCK:
+                AISSTREAM_STATE["connected"] = False
+                AISSTREAM_STATE["last_error"] = str(exc)
+            await asyncio.sleep(10)
+
+
+def _thread_entry():
+    try:
+        asyncio.run(_aisstream_loop())
+    except Exception as exc:  # pragma: no cover - defensive guard for background thread
+        LOGGER.exception("AISStream listener stopped: %s", exc)
+        with AISSTREAM_LOCK:
+            AISSTREAM_STATE["connected"] = False
+            AISSTREAM_STATE["last_error"] = str(exc)
+
+
+def start_aisstream_listener():
+    if not aisstream_enabled():
+        return
+    with AISSTREAM_LOCK:
+        if AISSTREAM_STATE["running"]:
+            return
+        AISSTREAM_STATE["running"] = True
+    thread = threading.Thread(target=_thread_entry, daemon=True)
+    thread.start()
+
+
+def get_aisstream_vessels(limit: int | None = None):
+    with AISSTREAM_LOCK:
+        _trim_cache_locked()
+        rows = list(AISSTREAM_STATE["vessels"].values())
+    clean_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in rows]
+    clean_rows.sort(key=lambda row: row.get("last_signal_at", ""), reverse=True)
+    return clean_rows[: limit or _max_vessels()]
+
+
+def get_aisstream_status():
+    boxes = _bounding_boxes()
+    with AISSTREAM_LOCK:
+        return {
+            "enabled": aisstream_enabled(),
+            "running": AISSTREAM_STATE["running"],
+            "connected": AISSTREAM_STATE["connected"],
+            "vessel_count": len(AISSTREAM_STATE["vessels"]),
+            "last_message_at": AISSTREAM_STATE["last_message_at"],
+            "last_error": AISSTREAM_STATE["last_error"],
+            "bounding_boxes": boxes,
+            "ssl_verification": "disabled-local-demo" if insecure_ssl_allowed() else "enabled",
+        }
