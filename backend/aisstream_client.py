@@ -101,6 +101,42 @@ def _project_position(lat: float, lon: float, heading: float, nautical_miles: fl
     return lat + lat_delta, lon + lon_delta
 
 
+def _map_motion_multiplier() -> float:
+    return max(1.0, min(5000.0, _number(os.getenv("AISSTREAM_MAP_MOTION_MULTIPLIER"), 1200.0) or 1200.0))
+
+
+def _project_api_display_position(row: dict[str, Any], now: datetime.datetime) -> dict[str, Any]:
+    lat = _number(row.get("position_lat"))
+    lon = _number(row.get("position_lon"))
+    speed = max(0.0, _number(row.get("speed_knots"), 0.0) or 0.0)
+    heading = _number(row.get("heading"), _number(row.get("cog"), 0.0)) or 0.0
+    last_epoch = _number(row.get("_last_signal_epoch"), now.timestamp())
+    if lat is None or lon is None:
+        return row
+
+    age_seconds = max(0.0, now.timestamp() - float(last_epoch or now.timestamp()))
+    visual_seconds = (age_seconds % 120.0) + (now.timestamp() % 12.0)
+    projected_nm = min(220.0, speed * (visual_seconds / 3600.0) * _map_motion_multiplier())
+    if speed <= 0.5 or projected_nm <= 0.02:
+        display_lat, display_lon = lat, lon
+    else:
+        display_lat, display_lon = _project_position(lat, lon, heading, projected_nm)
+        display_lat = max(-89.9, min(89.9, display_lat))
+        display_lon = ((display_lon + 180) % 360) - 180
+
+    row.update({
+        "api_position_lat": round(lat, 5),
+        "api_position_lon": round(lon, 5),
+        "display_position_lat": round(display_lat, 5),
+        "display_position_lon": round(display_lon, 5),
+        "motion_age_seconds": round(age_seconds, 1),
+        "motion_projected_nm": round(projected_nm, 2),
+        "motion_source": "AISStream API projected from heading, speed, and signal age",
+        "motion_trail": [[round(lon, 5), round(lat, 5)], [round(display_lon, 5), round(display_lat, 5)]],
+    })
+    return row
+
+
 def _manifest_for_mmsi(mmsi: str):
     try:
         index = int(mmsi) % len(FALLBACK_MANIFESTS)
@@ -301,10 +337,12 @@ def start_aisstream_listener():
 
 
 def get_aisstream_vessels(limit: int | None = None):
+    now = _utc_now()
     with AISSTREAM_LOCK:
         _trim_cache_locked()
-        rows = list(AISSTREAM_STATE["vessels"].values())
-    clean_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in rows]
+        rows = [dict(row) for row in AISSTREAM_STATE["vessels"].values()]
+    projected_rows = [_project_api_display_position(row, now) for row in rows]
+    clean_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in projected_rows]
     clean_rows.sort(key=lambda row: row.get("last_signal_at", ""), reverse=True)
     return clean_rows[: limit or _max_vessels()]
 

@@ -60,7 +60,7 @@ def api_cache_ttl(path):
     if path.startswith(live_paths):
         if bool(st.session_state.get("mobile_performance_mode", False)):
             return max(5, int(st.session_state.get("ui_refresh_seconds", 5)))
-        return max(1, int(st.session_state.get("ui_refresh_seconds", 3)))
+        return max(3, int(st.session_state.get("ui_refresh_seconds", 5)))
     if path.startswith(static_paths):
         return 30
     if any(token in path for token in ["history", "timeline", "reports", "forecast", "predictions"]):
@@ -303,7 +303,10 @@ def ensure_user_context():
             "viewer@demo.app": {"name": "Legacy Public", "role": "Public", "provider": "Email Magic Link", "password": "viewer-demo"},
         }
     if "ui_refresh_seconds" not in st.session_state:
-        st.session_state.ui_refresh_seconds = 3
+        st.session_state.ui_refresh_seconds = 5
+    if st.session_state.get("refresh_stability_version") != 2:
+        st.session_state.live_command_refresh = False
+        st.session_state.refresh_stability_version = 2
     if "mobile_performance_mode" not in st.session_state:
         st.session_state.mobile_performance_mode = False
     if "map_region" not in st.session_state:
@@ -796,9 +799,46 @@ def port_visual_data(routes):
     return rows
 
 
+def vessel_map_lat(vessel):
+    return float(vessel.get("display_position_lat", vessel.get("map_lat", vessel.get("lat", vessel.get("position_lat", 0)))) or 0)
+
+
+def vessel_map_lon(vessel):
+    return float(vessel.get("display_position_lon", vessel.get("map_lon", vessel.get("lon", vessel.get("position_lon", 0)))) or 0)
+
+
+def vessel_api_lat(vessel):
+    return float(vessel.get("api_position_lat", vessel.get("position_lat", vessel.get("lat", vessel_map_lat(vessel)))) or 0)
+
+
+def vessel_api_lon(vessel):
+    return float(vessel.get("api_position_lon", vessel.get("position_lon", vessel.get("lon", vessel_map_lon(vessel)))) or 0)
+
+
+def vessel_motion_trail(vessel, index=0, routes=None):
+    trail = vessel.get("motion_trail")
+    if isinstance(trail, list) and len(trail) >= 2:
+        return trail
+    lat = vessel_map_lat(vessel)
+    lon = vessel_map_lon(vessel)
+    heading = float(vessel.get("heading", 90) or 90)
+    if routes:
+        route = routes[index % len(routes)]
+        origin = PORT_COORDS.get(route.get("origin_port"), (lat, lon))
+        destination = PORT_COORDS.get(route.get("destination_port"), (lat, lon))
+        heading = bearing_angle(origin[0], origin[1], destination[0], destination[1])
+    angle = math.radians(heading)
+    tail_lon = lon - (math.sin(angle) * 2.4)
+    tail_lat = lat - (math.cos(angle) * 0.9)
+    return [[tail_lon, tail_lat], [lon, lat]]
+
+
 def vessel_wake_path(vessel, index, routes):
-    lat = float(vessel.get("position_lat", 0) or 0)
-    lon = float(vessel.get("position_lon", 0) or 0)
+    trail = vessel_motion_trail(vessel, index, routes)
+    if trail:
+        return trail
+    lat = vessel_map_lat(vessel)
+    lon = vessel_map_lon(vessel)
     if not routes:
         return [[lon - 1.2, lat - 0.2], [lon, lat]]
     route = routes[index % len(routes)]
@@ -1007,9 +1047,10 @@ def build_nautical_layers(vessels, routes, status_key="status", threats=None, de
     wave_tick = datetime.datetime.now().timestamp()
     for index, vessel in enumerate(vessels or []):
         status = str(vessel.get(status_key, vessel.get("status", "active"))).lower()
-        lat = float(vessel.get("position_lat", vessel.get("lat", 0)) or 0)
-        lon = float(vessel.get("position_lon", vessel.get("lon", 0)) or 0)
-        if status not in {"destroyed", "maintenance"}:
+        lat = vessel_map_lat(vessel)
+        lon = vessel_map_lon(vessel)
+        uses_api_projection = vessel.get("display_position_lat") is not None or vessel.get("display_position_lon") is not None
+        if status not in {"destroyed", "maintenance"} and not uses_api_projection:
             lat += math.sin(wave_tick + index) * 0.04
             lon += math.cos(wave_tick + index) * 0.12
         if status == "destroyed":
@@ -1050,6 +1091,9 @@ def build_nautical_layers(vessels, routes, status_key="status", threats=None, de
             "route": route_name,
             "target": "",
             "eta": "",
+            "speed": f"{float(vessel.get('speed_knots', 0) or 0):.1f} kn" if vessel.get("speed_knots") is not None else "",
+            "motion_source": vessel.get("motion_source", "map projection"),
+            "api_position": f"{vessel_api_lat(vessel):.4f}, {vessel_api_lon(vessel):.4f}",
             "color": color,
             "effect_color": effect,
             "radius": 145000 if status == "active" else 170000,
@@ -1063,7 +1107,7 @@ def build_nautical_layers(vessels, routes, status_key="status", threats=None, de
         if status not in {"destroyed", "maintenance"}:
             wake_rows.append({
                 "name": row["name"],
-                "path": vessel_wake_path({"position_lat": lat, "position_lon": lon}, index, routes),
+                "path": vessel_wake_path({**vessel, "lat": lat, "lon": lon}, index, routes),
                 "color": [191, 219, 254, 95] if status == "active" else [251, 191, 36, 120],
             })
     incident_rows = [row for row in vessel_rows if row["status"] in {"Damaged", "Destroyed"}]
@@ -1328,7 +1372,7 @@ def nautical_deck(vessels, routes, threats=None, decisions=None):
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=22, longitude=55, zoom=1.35, pitch=35, bearing=-12),
         tooltip={
-            "html": "<b>{name}</b><br/>Status: {status}<br/>Route/Target: {route}{target}<br/>ETA: {eta}",
+            "html": "<b>{name}</b><br/>Status: {status}<br/>Route/Target: {route}{target}<br/>Speed: {speed}<br/>API point: {api_position}<br/>Motion: {motion_source}<br/>ETA: {eta}",
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
     )
@@ -2139,9 +2183,10 @@ def prepare_fleet_map_data(vessels):
             text_color = [255, 255, 255, 255]
             radius = 125000
             symbol = "SHIP"
-        base_lat = float(vessel.get("position_lat", 0) or 0)
-        base_lon = float(vessel.get("position_lon", 0) or 0)
-        drift = 0 if condition == "destroyed" else math.sin(wave_tick + index) * 0.18
+        base_lat = vessel_map_lat(vessel)
+        base_lon = vessel_map_lon(vessel)
+        uses_api_projection = vessel.get("display_position_lat") is not None or vessel.get("display_position_lon") is not None
+        drift = 0 if condition == "destroyed" or uses_api_projection else math.sin(wave_tick + index) * 0.18
         map_data.append({
             "name": vessel.get("name", f"Vessel {index + 1}"),
             "lat": base_lat + (drift * 0.25),
@@ -2165,8 +2210,8 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
 
     for index, vessel in enumerate(vessels or []):
         status = str(vessel.get("status", "active")).lower()
-        lat = float(vessel.get("position_lat", 0) or 0)
-        lon = float(vessel.get("position_lon", 0) or 0)
+        lat = vessel_map_lat(vessel)
+        lon = vessel_map_lon(vessel)
         route = routes[index % len(routes)] if routes else None
         route_name = vessel.get("route") or (f"{route.get('origin_port')} to {route.get('destination_port')}" if route else "Unassigned")
         is_selected = vessel.get("name") == selected_name
@@ -2213,6 +2258,9 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             "nearest_port": nearest_port,
             "priority": priority,
             "signal": f"{signal_age:.0f}s" if signal_age is not None else "Unknown",
+            "api_position": f"{vessel_api_lat(vessel):.4f}, {vessel_api_lon(vessel):.4f}",
+            "motion_source": vessel.get("motion_source", "map projection"),
+            "motion_nm": vessel.get("motion_projected_nm", 0),
             "color": color,
             "slot_color": slot_color,
             "radius": radius,
@@ -2388,7 +2436,8 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             "html": (
                 "<b>{name}</b><br/>Status: {status}<br/>Nearest port: {nearest_port}<br/>"
                 "Cargo: {cargo}<br/>Speed: {speed}<br/>Signal age: {signal}<br/>"
-                "Priority: {priority}<br/>Command: {command}"
+                "Priority: {priority}<br/>Command: {command}<br/>"
+                "API point: {api_position}<br/>Motion: {motion_source} ({motion_nm} nm)"
             ),
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
@@ -2407,7 +2456,7 @@ def fleet_port_workload_rows(vessels):
     for port_name in PORT_COORDS:
         local_vessels = [
             vessel for vessel in vessels or []
-            if nearest_known_port_name(vessel.get("position_lat"), vessel.get("position_lon")) == port_name
+            if nearest_known_port_name(vessel_map_lat(vessel), vessel_map_lon(vessel)) == port_name
         ]
         priority_load = sum(vessel_priority_score(vessel) for vessel in local_vessels)
         slow = sum(1 for vessel in local_vessels if vessel_speed(vessel) <= 1)
@@ -2476,8 +2525,8 @@ def render_fleet_control_tower(vessels):
 def render_floating_ship_map(vessels):
     if not vessels:
         return
-    lats = [float(vessel.get("position_lat", 0) or 0) for vessel in vessels]
-    lons = [float(vessel.get("position_lon", 0) or 0) for vessel in vessels]
+    lats = [vessel_map_lat(vessel) for vessel in vessels]
+    lons = [vessel_map_lon(vessel) for vessel in vessels]
     min_lat, max_lat = min(lats), max(lats)
     min_lon, max_lon = min(lons), max(lons)
     lat_span = max(max_lat - min_lat, 1)
@@ -2485,8 +2534,8 @@ def render_floating_ship_map(vessels):
     ship_nodes = []
     for index, vessel in enumerate(vessels):
         condition = vessel_condition(vessel, index)
-        lat = float(vessel.get("position_lat", 0) or 0)
-        lon = float(vessel.get("position_lon", 0) or 0)
+        lat = vessel_map_lat(vessel)
+        lon = vessel_map_lon(vessel)
         left = 8 + ((lon - min_lon) / lon_span) * 84
         top = 82 - ((lat - min_lat) / lat_span) * 68
         label = vessel.get("name", f"Vessel {index + 1}")
@@ -2647,7 +2696,7 @@ def render_interactive_fleet_map(vessels, routes=None):
     with detail_col2:
         st.metric("Condition", selected_vessel.get("status", "active").title())
     with detail_col3:
-        st.metric("Nearest Port", nearest_known_port_name(selected_vessel.get("position_lat"), selected_vessel.get("position_lon")))
+        st.metric("Nearest Port", nearest_known_port_name(vessel_map_lat(selected_vessel), vessel_map_lon(selected_vessel)))
     with detail_col4:
         st.metric("Speed", f"{vessel_speed(selected_vessel):.1f} kn")
     with detail_col5:
@@ -3084,8 +3133,8 @@ def fleet_triage_rows(vessels):
     rows = []
     for vessel in vessels or []:
         age = vessel_signal_age(vessel)
-        lat = vessel.get("position_lat", vessel.get("lat", 0))
-        lon = vessel.get("position_lon", vessel.get("lon", 0))
+        lat = vessel_map_lat(vessel)
+        lon = vessel_map_lon(vessel)
         priority = vessel_priority_score(vessel)
         if priority >= 55:
             action = "Escalate to operations lead"
@@ -3117,7 +3166,7 @@ def route_vessel_exposure(route_name, vessels):
         vessel_ports = {
             str(vessel.get("origin_port", "")).lower(),
             str(vessel.get("destination_port", "")).lower(),
-            nearest_known_port_name(vessel.get("position_lat"), vessel.get("position_lon")).lower(),
+            nearest_known_port_name(vessel_map_lat(vessel), vessel_map_lon(vessel)).lower(),
         }
         if any(port.lower() in vessel_ports for port in ports):
             exposed.append(vessel)
@@ -3226,8 +3275,8 @@ def dashboard_cargo_ship_rows(routes, live=None):
             destination = vessel.get("destination_port") or route.get("destination_port", "Destination")
             origin_coords = PORT_COORDS.get(origin, (vessel.get("origin_lat"), vessel.get("origin_lon")))
             destination_coords = PORT_COORDS.get(destination, (vessel.get("destination_lat"), vessel.get("destination_lon")))
-            lat = float(vessel.get("position_lat", origin_coords[0]) or 0)
-            lon = float(vessel.get("position_lon", origin_coords[1]) or 0)
+            lat = vessel_map_lat({**vessel, "position_lat": vessel.get("position_lat", origin_coords[0]), "position_lon": vessel.get("position_lon", origin_coords[1])})
+            lon = vessel_map_lon({**vessel, "position_lat": vessel.get("position_lat", origin_coords[0]), "position_lon": vessel.get("position_lon", origin_coords[1])})
             route_name = vessel.get("route") or f"{origin} to {destination}"
             decision = decision_by_route.get(route_name, {})
             risk = float(decision.get("risk_score", decision.get("score", route.get("risk_level", 0))) or 0)
@@ -3235,13 +3284,14 @@ def dashboard_cargo_ship_rows(routes, live=None):
             heading = float(vessel.get("heading", bearing_angle(origin_coords[0], origin_coords[1], destination_coords[0], destination_coords[1])) or 0)
             color = _ship_color_for_status(vessel.get("status"), cargo.get("color", [34, 211, 238, 235]))
             angle = math.radians(heading)
-            tail_lon = lon - (math.sin(angle) * 3.2)
-            tail_lat = lat - (math.cos(angle) * 1.1)
+            trail = vessel_motion_trail(vessel, index, routes)
 
             ship_rows.append({
                 "name": vessel.get("name", f"Cargo Ship {index + 1}"),
                 "lat": lat,
                 "lon": lon,
+                "api_lat": vessel_api_lat(vessel),
+                "api_lon": vessel_api_lon(vessel),
                 "route": route_name,
                 "origin": origin,
                 "destination": destination,
@@ -3265,10 +3315,12 @@ def dashboard_cargo_ship_rows(routes, live=None):
                 "band": decision.get("band", risk_label(risk)),
                 "detail": f"Live vessel telemetry from {API_BASE}/ai/live",
                 "source": vessel.get("source", "Backend live feed"),
+                "motion_source": vessel.get("motion_source", "AIS/API map projection"),
+                "motion_nm": vessel.get("motion_projected_nm", 0),
             })
             wake_rows.append({
                 "name": f"{vessel.get('name', 'Vessel')} wake",
-                "path": [[tail_lon, tail_lat], [lon, lat]],
+                "path": trail,
                 "color": color[:3] + [105],
             })
         return ship_rows, wake_rows
@@ -3561,7 +3613,8 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
                 "Cargo: {cargo}<br/>Tonnage: {tons}<br/>Value: {value}<br/>"
                 "Speed: {speed}<br/>ETA: {eta}<br/>Progress: {progress}<br/>"
                 "Risk: {risk}<br/>Status/Band: {status}{band}<br/>"
-                "Last signal: {last_signal}<br/>Source: {source}"
+                "Last signal: {last_signal}<br/>Source: {source}<br/>"
+                "API point: {api_lat}, {api_lon}<br/>Motion: {motion_source} ({motion_nm} nm)"
             ),
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
@@ -3572,7 +3625,7 @@ def render_dashboard_trade_pulse_map(overview, routes):
     live = None
     live_error = None
     try:
-        live = api_get("/ai/live")
+        live = api_get("/ai/live", fresh=True)
     except Exception as error:
         live_error = error
 
@@ -3624,6 +3677,15 @@ def render_dashboard_trade_pulse_map(overview, routes):
 def mission_overlay_deck(overlay):
     route_rows = overlay.get("routes", [])
     vessel_rows = [row for row in overlay.get("vessels", []) if row.get("lat") is not None and row.get("lon") is not None]
+    vessel_trails = [
+        {
+            "name": f"{row.get('name', 'Vessel')} API motion trail",
+            "path": row.get("motion_trail"),
+            "color": [191, 219, 254, 110],
+        }
+        for row in vessel_rows
+        if isinstance(row.get("motion_trail"), list) and len(row.get("motion_trail")) >= 2
+    ]
     alert_rows = [row for row in overlay.get("alerts", []) if row.get("lat") is not None and row.get("lon") is not None]
     layers = []
     if route_rows:
@@ -3637,6 +3699,16 @@ def mission_overlay_deck(overlay):
             rounded=True,
             pickable=True,
             auto_highlight=True,
+        ))
+    if vessel_trails:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=vessel_trails,
+            get_path="path",
+            get_color="color",
+            get_width=4,
+            width_min_pixels=1,
+            rounded=True,
         ))
     if vessel_rows:
         layers.append(pdk.Layer(
@@ -3691,7 +3763,7 @@ def mission_overlay_deck(overlay):
             "html": (
                 "<b>{route}{name}{target}</b><br/>"
                 "Risk/Score: {risk}{score}<br/>Band/Priority: {band}{priority}<br/>"
-                "Signals: {signals}<br/>Cargo: {cargo}<br/>Action: {action}"
+                "Signals: {signals}<br/>Cargo: {cargo}<br/>Action: {action}<br/>Motion: {motion_source}"
             ),
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
@@ -3720,7 +3792,7 @@ def render_mission_overlay(overlay):
 
 
 if hasattr(st, "fragment"):
-    render_dashboard_trade_pulse_map = st.fragment(run_every="3s")(render_dashboard_trade_pulse_map)
+    render_dashboard_trade_pulse_map = st.fragment(run_every="5s")(render_dashboard_trade_pulse_map)
 
 
 def show_global_dashboard():
@@ -3813,7 +3885,7 @@ def show_fleet_tracking():
         registry_vessels = api_get("/vessels")
         routes = api_get("/routes")
         operations = api_get("/analytics/operations")
-        live = api_get("/ai/live")
+        live = api_get("/ai/live", fresh=True)
     except Exception as e:
         show_api_error("Fleet data", e)
         return
@@ -3892,7 +3964,7 @@ def show_fleet_tracking():
         with detail_col1:
             st.metric("Speed", f"{float(selected_vessel.get('speed_knots') or 0):.1f} kn")
             st.metric("Heading", selected_vessel.get("heading", "Unknown"))
-            st.metric("Nearest Port", selected_vessel.get("origin_port") or nearest_known_port_name(selected_vessel.get("position_lat"), selected_vessel.get("position_lon")))
+            st.metric("Nearest Port", selected_vessel.get("origin_port") or nearest_known_port_name(vessel_map_lat(selected_vessel), vessel_map_lon(selected_vessel)))
             st.metric("Cargo", selected_vessel.get("cargo", "Unknown"), selected_vessel.get("cargo_class", ""))
         with detail_col2:
             detail_rows = [
@@ -3926,7 +3998,10 @@ def show_fleet_tracking():
 
     fleet_df = pd.DataFrame(vessels)
     if not fleet_df.empty:
-        fleet_df["nearest_port"] = fleet_df.apply(lambda row: min(PORT_COORDS, key=lambda port: abs(row["position_lat"] - PORT_COORDS[port][0]) + abs(row["position_lon"] - PORT_COORDS[port][1])), axis=1)
+        fleet_df["nearest_port"] = [
+            nearest_known_port_name(vessel_map_lat(vessel), vessel_map_lon(vessel))
+            for vessel in vessels
+        ]
         fleet_df["incident_condition"] = [vessel_condition(vessel, index).title() for index, vessel in enumerate(vessels)]
         st.markdown("### Fleet Registry")
         if data_source == "AISStream":
@@ -4278,23 +4353,41 @@ def operations_signal_deck(history_rows, timeline_rows=None):
         latest_by_vessel[row.get("vessel_identifier", row.get("vessel_name", "unknown"))] = row
 
     vessel_rows = []
+    vessel_trails = []
     port_counts = {}
     for row in latest_by_vessel.values():
-        lat = float(row.get("position_lat", 0) or 0)
-        lon = float(row.get("position_lon", 0) or 0)
-        nearest = row.get("nearest_port") or nearest_known_port_name(lat, lon)
+        api_lat = float(row.get("position_lat", 0) or 0)
+        api_lon = float(row.get("position_lon", 0) or 0)
         speed = float(row.get("speed_knots", 0) or 0)
+        heading = float(row.get("heading", 90) or 90)
+        signal_age = _seconds_since_iso(row.get("timestamp")) or 0
+        visual_seconds = min(signal_age, 90) + (datetime.datetime.now().timestamp() % 12)
+        projected_nm = min(28, speed * (visual_seconds / 3600) * 75)
+        if speed > 0.5 and projected_nm > 0.02:
+            angle = math.radians(heading)
+            lat = api_lat + (math.cos(angle) * projected_nm / 60)
+            lon = api_lon + (math.sin(angle) * projected_nm / (60 * max(0.2, abs(math.cos(math.radians(api_lat))))))
+        else:
+            lat, lon = api_lat, api_lon
+        nearest = row.get("nearest_port") or nearest_known_port_name(lat, lon)
         port_counts[nearest] = port_counts.get(nearest, 0) + 1
         vessel_rows.append({
             "name": row.get("vessel_name", "Unknown vessel"),
             "lat": lat,
             "lon": lon,
+            "api_position": f"{api_lat:.4f}, {api_lon:.4f}",
             "speed": round(speed, 1),
             "nearest_port": nearest,
             "status": row.get("status", "active"),
             "signal": row.get("timestamp", "unknown"),
+            "motion": "AIS history projected from speed, heading, and timestamp",
             "color": [45, 212, 191, 220] if speed > 3 else [251, 191, 36, 220],
             "radius": 52000 if speed > 3 else 72000,
+        })
+        vessel_trails.append({
+            "name": row.get("vessel_name", "Unknown vessel"),
+            "path": [[api_lon, api_lat], [lon, lat]],
+            "color": [191, 219, 254, 95],
         })
 
     port_rows = []
@@ -4335,6 +4428,16 @@ def operations_signal_deck(history_rows, timeline_rows=None):
             get_alignment_baseline="'bottom'",
             get_text_anchor="'middle'",
         ))
+    if vessel_trails:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=vessel_trails,
+            get_path="path",
+            get_color="color",
+            get_width=4,
+            width_min_pixels=1,
+            rounded=True,
+        ))
     if vessel_rows:
         layers.append(pdk.Layer(
             "ScatterplotLayer",
@@ -4353,7 +4456,7 @@ def operations_signal_deck(history_rows, timeline_rows=None):
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=21, longitude=58, zoom=1.45, pitch=18, bearing=-8),
         tooltip={
-            "html": "<b>{name}</b><br/>Nearest port: {nearest_port}<br/>Speed: {speed} kn<br/>Signal: {signal}<br/>Vessels: {count}",
+            "html": "<b>{name}</b><br/>Nearest port: {nearest_port}<br/>Speed: {speed} kn<br/>Signal: {signal}<br/>API point: {api_position}<br/>Motion: {motion}<br/>Vessels: {count}",
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
     )
@@ -4555,12 +4658,31 @@ def scenario_lab_deck(result):
         if vessel.get("position_lat") is None or vessel.get("position_lon") is None:
             continue
         exposure_score = float(vessel.get("exposure_score", 0) or 0)
+        lat = vessel.get("display_position_lat", vessel.get("position_lat"))
+        lon = vessel.get("display_position_lon", vessel.get("position_lon"))
         vessel_rows.append({
             **vessel,
+            "position_lat": lat,
+            "position_lon": lon,
             "name": vessel.get("vessel", "Exposed vessel"),
             "route": "",
             "color": [255, max(60, int(255 - exposure_score * 16)), 80, 215],
         })
+    vessel_trails = [
+        {"name": row.get("name"), "path": row.get("motion_trail"), "color": [191, 219, 254, 115]}
+        for row in vessel_rows
+        if isinstance(row.get("motion_trail"), list) and len(row.get("motion_trail")) >= 2
+    ]
+    if vessel_trails:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=vessel_trails,
+            get_path="path",
+            get_color="color",
+            get_width=4,
+            width_min_pixels=1,
+            rounded=True,
+        ))
     if vessel_rows:
         layers.append(pdk.Layer(
             "ScatterplotLayer",
@@ -5078,8 +5200,8 @@ def voyage_control_tower_deck(tower):
         })
     vessel_rows = []
     for vessel in tower.get("map", {}).get("vessels", []):
-        lat = vessel.get("position_lat")
-        lon = vessel.get("position_lon")
+        lat = vessel.get("display_position_lat", vessel.get("position_lat"))
+        lon = vessel.get("display_position_lon", vessel.get("position_lon"))
         if lat is None or lon is None:
             continue
         priority = str(vessel.get("priority", "P3"))
@@ -5090,9 +5212,15 @@ def voyage_control_tower_deck(tower):
             "lon": lon,
             "name": vessel.get("vessel", "Vessel"),
             "score": score,
+            "motion_source": vessel.get("motion_source", "live feed"),
             "color": [239, 68, 68, 235] if priority == "P1" else [245, 158, 11, 225] if priority == "P2" else [45, 212, 191, 210],
             "radius": max(26000, min(105000, 23000 + score * 900)),
         })
+    vessel_trails = [
+        {"name": row.get("name"), "path": row.get("motion_trail"), "color": [191, 219, 254, 115]}
+        for row in vessel_rows
+        if isinstance(row.get("motion_trail"), list) and len(row.get("motion_trail")) >= 2
+    ]
     layers = []
     if route_rows:
         layers.append(pdk.Layer(
@@ -5104,6 +5232,16 @@ def voyage_control_tower_deck(tower):
             width_min_pixels=2,
             rounded=True,
             pickable=True,
+        ))
+    if vessel_trails:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=vessel_trails,
+            get_path="path",
+            get_color="color",
+            get_width=4,
+            width_min_pixels=1,
+            rounded=True,
         ))
     if vessel_rows:
         layers.append(pdk.Layer(
@@ -5137,7 +5275,7 @@ def voyage_control_tower_deck(tower):
                 "<b>{name}</b><br/>"
                 "Risk/Score: {risk}{score}<br/>"
                 "Priority/Band: {priority}{band}<br/>"
-                "Action: {recommended_action}{recommendation}"
+                "Action: {recommended_action}{recommendation}<br/>Motion: {motion_source}"
             ),
             "style": {"backgroundColor": "#020617", "color": "#e0f2fe"},
         },
@@ -5201,7 +5339,7 @@ def show_voyage_control_tower():
     st.title("Voyage Control Tower")
     st.caption("Autonomous Maritime Command OS: anomaly detection, route-mode choice, AI action approval, timeline, and reliability in one brain.")
     try:
-        tower = api_get("/ai/voyage-control-tower")
+        tower = api_get("/ai/voyage-control-tower", fresh=True)
     except Exception as e:
         show_api_error("Voyage Control Tower", e)
         return
@@ -6534,9 +6672,9 @@ def show_settings():
         try:
             refresh_default = int(st.session_state.ui_refresh_seconds)
         except (TypeError, ValueError):
-            refresh_default = 1
-        refresh_default = max(1, min(10, refresh_default))
-        st.session_state.ui_refresh_seconds = st.slider("Live panel refresh seconds", 1, 10, refresh_default)
+            refresh_default = 5
+        refresh_default = max(3, min(20, refresh_default))
+        st.session_state.ui_refresh_seconds = st.slider("Live panel refresh seconds", 3, 20, refresh_default)
         st.session_state.mobile_performance_mode = st.toggle(
             "Mobile Performance Mode",
             value=bool(st.session_state.get("mobile_performance_mode", False)),
@@ -6785,6 +6923,22 @@ def risk_brain_deck(packet):
                 "color": line_color_by_priority.get(priority, line_color_by_priority["P3"]),
                 "width": 5 if priority == "P1" else 4 if priority == "P2" else 2,
             })
+    vessel_rows = []
+    for vessel in packet.get("map_layers", {}).get("vessels", []):
+        if vessel.get("lat") is None or vessel.get("lon") is None:
+            continue
+        priority = vessel.get("priority", "P3")
+        vessel_rows.append({
+            **vessel,
+            "color": line_color_by_priority.get(priority, line_color_by_priority["P3"]),
+            "halo": color_by_priority.get(priority, color_by_priority["P3"]),
+            "radius": 115000 if priority == "P1" else 85000,
+        })
+    vessel_trails = [
+        {"name": row.get("name"), "path": row.get("motion_trail"), "color": [191, 219, 254, 110]}
+        for row in vessel_rows
+        if isinstance(row.get("motion_trail"), list) and len(row.get("motion_trail")) >= 2
+    ]
 
     layers = []
     if zones:
@@ -6811,6 +6965,39 @@ def risk_brain_deck(packet):
             get_width="width",
             pickable=True,
         ))
+    if vessel_trails:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=vessel_trails,
+            get_path="path",
+            get_color="color",
+            get_width=4,
+            width_min_pixels=1,
+            rounded=True,
+        ))
+    if vessel_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=vessel_rows,
+            get_position="[lon, lat]",
+            get_fill_color="halo",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="color",
+            line_width_min_pixels=2,
+            pickable=True,
+        ))
+        layers.append(pdk.Layer(
+            "TextLayer",
+            data=vessel_rows,
+            get_position="[lon, lat]",
+            get_text="name",
+            get_color=[248, 250, 252, 245],
+            get_size=11,
+            get_pixel_offset=[0, 24],
+            get_alignment_baseline="'top'",
+            get_text_anchor="'middle'",
+        ))
 
     focus = zones[0] if zones else {"lat": 20, "lon": 15}
     return pdk.Deck(
@@ -6818,7 +7005,7 @@ def risk_brain_deck(packet):
         layers=layers,
         initial_view_state=pdk.ViewState(latitude=focus.get("lat", 20), longitude=focus.get("lon", 15), zoom=1.45, pitch=42, bearing=-18),
         tooltip={
-            "html": "<b>{name}{route}</b><br/>Category: {category}<br/>Risk: {risk_score}{score}<br/>{note}{action}",
+            "html": "<b>{name}{route}</b><br/>Category: {category}<br/>Risk: {risk_score}{score}{delay_risk}<br/>{note}{action}<br/>Motion: {motion_source}",
             "style": {"backgroundColor": "#06111f", "color": "#f8fafc"},
         },
     )
@@ -6828,7 +7015,7 @@ def show_ai_risk_brain():
     st.title("AI Risk Brain")
     st.caption("AI-oriented risk intelligence for natural hazards, hijack/piracy, war/geopolitical disruption, port failures, cyber/AIS integrity, cargo crime, and fuel shocks.")
     try:
-        packet = api_get("/ai/risk-intelligence")
+        packet = api_get("/ai/risk-intelligence", fresh=True)
         routes = api_get("/routes")
     except Exception as e:
         show_api_error("AI Risk Brain", e)

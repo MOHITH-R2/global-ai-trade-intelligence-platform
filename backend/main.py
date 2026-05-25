@@ -3239,7 +3239,7 @@ def get_vessel_predictions(limit: int = 50, db: Session = Depends(get_db)):
             "vessel": str(vessel.get("name") or vessel_identifier(vessel)),
             "source": str(vessel.get("source") or source),
             "route": route_name,
-            "nearest_port": nearest_port(vessel_lat(vessel), vessel_lon(vessel)),
+            "nearest_port": nearest_port(vessel_display_lat(vessel), vessel_display_lon(vessel)),
             "speed_knots": round(speed, 1),
             "eta_hours": round(eta_hours, 1),
             "delay_risk": delay_score,
@@ -3251,6 +3251,13 @@ def get_vessel_predictions(limit: int = 50, db: Session = Depends(get_db)):
             "recommended_action": route_decision(delay_score),
             "position_lat": vessel_lat(vessel),
             "position_lon": vessel_lon(vessel),
+            "display_position_lat": vessel_display_lat(vessel),
+            "display_position_lon": vessel_display_lon(vessel),
+            "api_position_lat": vessel.get("api_position_lat", vessel_lat(vessel)),
+            "api_position_lon": vessel.get("api_position_lon", vessel_lon(vessel)),
+            "motion_source": vessel.get("motion_source", source),
+            "motion_trail": vessel.get("motion_trail", [[vessel_lon(vessel), vessel_lat(vessel)], [vessel_display_lon(vessel), vessel_display_lat(vessel)]]),
+            "heading": parse_float(vessel.get("heading"), 0),
         })
     return {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -4419,6 +4426,12 @@ def build_ai_risk_intelligence(db: Session) -> dict:
                 "nearest_port": item.get("nearest_port"),
                 "cargo": item.get("cargo"),
                 "action": item.get("recommended_action"),
+                "position_lat": item.get("position_lat"),
+                "position_lon": item.get("position_lon"),
+                "display_position_lat": item.get("display_position_lat"),
+                "display_position_lon": item.get("display_position_lon"),
+                "motion_source": item.get("motion_source"),
+                "motion_trail": item.get("motion_trail", []),
             }
             for item in (high_delay_vessels or predictions)[:4]
         ]
@@ -4499,6 +4512,23 @@ def build_ai_risk_intelligence(db: Session) -> dict:
                     "path": route_path_from_name(item.get("route")),
                 }
                 for item in assessments[:8]
+            ],
+            "vessels": [
+                {
+                    "name": item.get("vessel"),
+                    "lat": item.get("display_position_lat", item.get("position_lat")),
+                    "lon": item.get("display_position_lon", item.get("position_lon")),
+                    "api_lat": item.get("api_position_lat", item.get("position_lat")),
+                    "api_lon": item.get("api_position_lon", item.get("position_lon")),
+                    "delay_risk": item.get("delay_risk"),
+                    "priority": mission_priority(float(item.get("delay_risk", 0) or 0) * 10),
+                    "cargo": item.get("cargo"),
+                    "nearest_port": item.get("nearest_port"),
+                    "motion_source": item.get("motion_source"),
+                    "motion_trail": item.get("motion_trail", []),
+                }
+                for item in predictions[:12]
+                if item.get("position_lat") is not None and item.get("position_lon") is not None
             ],
         },
         "explainability": {
@@ -4663,12 +4693,17 @@ def get_mission_map_overlay(db: Session = Depends(get_db)):
         vessel_points.append({
             "name": vessel.get("vessel"),
             "route": vessel.get("route"),
-            "lat": vessel.get("position_lat"),
-            "lon": vessel.get("position_lon"),
+            "lat": vessel.get("display_position_lat", vessel.get("position_lat")),
+            "lon": vessel.get("display_position_lon", vessel.get("position_lon")),
+            "api_lat": vessel.get("api_position_lat", vessel.get("position_lat")),
+            "api_lon": vessel.get("api_position_lon", vessel.get("position_lon")),
             "risk": vessel.get("delay_risk"),
             "band": vessel.get("delay_band"),
             "cargo": vessel.get("cargo"),
             "action": vessel.get("recommended_action"),
+            "heading": vessel.get("heading"),
+            "motion_source": vessel.get("motion_source", "live feed"),
+            "motion_trail": vessel.get("motion_trail", []),
             "color": mission_overlay_color(risk),
             "radius": 190000 if risk >= 75 else 130000,
         })
@@ -5100,6 +5135,12 @@ def build_vessel_anomaly_cards(
             "cargo_verified": verified_cargo,
             "position_lat": vessel_lat(vessel),
             "position_lon": vessel_lon(vessel),
+            "display_position_lat": vessel_display_lat(vessel),
+            "display_position_lon": vessel_display_lon(vessel),
+            "api_position_lat": vessel.get("api_position_lat", vessel_lat(vessel)),
+            "api_position_lon": vessel.get("api_position_lon", vessel_lon(vessel)),
+            "motion_source": vessel.get("motion_source", source),
+            "motion_trail": vessel.get("motion_trail", [[vessel_lon(vessel), vessel_lat(vessel)], [vessel_display_lon(vessel), vessel_display_lat(vessel)]]),
         })
     return sorted(rows, key=lambda row: (-row["anomaly_score"], row["vessel"]))[:limit]
 
@@ -7260,8 +7301,8 @@ def scenario_route_affinity(route: TradeRoute, location: str, coords: tuple[floa
 
 
 def scenario_vessel_exposure(vessel: dict, location: str, coords: tuple[float, float], severity_multiplier: float) -> dict | None:
-    lat = vessel_lat(vessel)
-    lon = vessel_lon(vessel)
+    lat = vessel_display_lat(vessel)
+    lon = vessel_display_lon(vessel)
     distance = geo_distance_nm(coords[0], coords[1], lat, lon) if lat or lon else 9999.0
     nearest = nearest_port(lat, lon)
     location_key = str(location or "").lower()
@@ -7296,6 +7337,12 @@ def scenario_vessel_exposure(vessel: dict, location: str, coords: tuple[float, f
         "recommendation": recommendation,
         "position_lat": lat,
         "position_lon": lon,
+        "api_position_lat": vessel.get("api_position_lat", vessel_lat(vessel)),
+        "api_position_lon": vessel.get("api_position_lon", vessel_lon(vessel)),
+        "display_position_lat": lat,
+        "display_position_lon": lon,
+        "motion_source": vessel.get("motion_source", "scenario live feed"),
+        "motion_trail": vessel.get("motion_trail", [[vessel_lon(vessel), vessel_lat(vessel)], [lon, lat]]),
     }
 
 
@@ -7675,6 +7722,14 @@ def vessel_lat(vessel):
 
 def vessel_lon(vessel):
     return float(vessel_field(vessel, "position_lon", 0) or 0)
+
+
+def vessel_display_lat(vessel):
+    return float(vessel_field(vessel, "display_position_lat", vessel_lat(vessel)) or 0)
+
+
+def vessel_display_lon(vessel):
+    return float(vessel_field(vessel, "display_position_lon", vessel_lon(vessel)) or 0)
 
 
 def get_registered_vessels(db: Session):
@@ -8492,6 +8547,14 @@ def build_live_vessel_payload(vessel: Vessel, route: TradeRoute, index: int, now
         "name": vessel.name,
         "position_lat": round(lat, 5),
         "position_lon": round(lon, 5),
+        "api_position_lat": round(lat, 5),
+        "api_position_lon": round(lon, 5),
+        "display_position_lat": round(lat, 5),
+        "display_position_lon": round(lon, 5),
+        "motion_source": "Demo route simulation",
+        "motion_projected_nm": 0,
+        "motion_age_seconds": 0,
+        "motion_trail": [[round(lon - (math.sin(math.radians(heading)) * 1.8), 5), round(lat - (math.cos(math.radians(heading)) * 0.65), 5)], [round(lon, 5), round(lat, 5)]],
         "status": vessel.status,
         "route": f"{route.origin_port} to {route.destination_port}",
         "origin_port": route.origin_port,
