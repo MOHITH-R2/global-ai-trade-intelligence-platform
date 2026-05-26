@@ -40,6 +40,8 @@ def api_cache_ttl(path):
         "/ai/mission-map-overlay",
         "/ai/strategic-autopilot",
         "/ai/voyage-control-tower",
+        "/ai/captain",
+        "/ai/incident-predictions",
         "/operations/inbox",
         "/vessels/live",
         "/notifications",
@@ -553,7 +555,16 @@ def render_top_utility_bar(notifications=None, health=None):
     st.markdown('<div class="app-topbar-anchor"></div>', unsafe_allow_html=True)
     left, spacer, notify_col, settings_col, close_col = st.columns([4.4, 1.25, 1.05, 1.05, 0.7])
     with left:
-        st.caption(f"API {api_status} | Role {current_role()} | Access {auth_status_label()} | Mobile-ready command shell")
+        st.markdown(
+            f"""
+            <div class="topbar-card">
+                <span class="topbar-pill">{safe_html(api_status)}</span>
+                <b>Maritime Command OS</b>
+                <span> | {safe_html(current_role())} | {safe_html(auth_status_label())} | Mobile-ready demo shell</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     with spacer:
         if critical:
             st.caption(f"{critical} critical")
@@ -1627,44 +1638,220 @@ def _apply_global_styles():
     st.markdown("""
     <style>
         :root {
-            --shell-bg: #07111f;
-            --panel-bg: rgba(15, 23, 42, 0.72);
-            --panel-border: rgba(148, 163, 184, 0.18);
-            --accent: #38bdf8;
+            --shell-bg: #06111f;
+            --panel-bg: rgba(8, 19, 34, 0.72);
+            --panel-border: rgba(148, 163, 184, 0.2);
+            --accent: #22d3ee;
+            --accent-2: #facc15;
+            --ink: #f8fafc;
+            --muted: rgba(226, 232, 240, 0.72);
         }
         .stApp {
             background:
-                radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 34rem),
-                linear-gradient(135deg, #07111f 0%, #111827 48%, #0f172a 100%);
+                radial-gradient(circle at 8% 8%, rgba(34, 211, 238, 0.2), transparent 28rem),
+                radial-gradient(circle at 86% 12%, rgba(250, 204, 21, 0.14), transparent 24rem),
+                radial-gradient(circle at 50% 92%, rgba(20, 184, 166, 0.13), transparent 30rem),
+                linear-gradient(135deg, #06111f 0%, #0b1628 46%, #111827 100%);
+            color: var(--ink);
+        }
+        .stApp::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0.28;
+            background-image:
+                linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+            background-size: 42px 42px;
+            mask-image: linear-gradient(to bottom, black, transparent 88%);
+            z-index: 0;
         }
         .block-container {
             max-width: 1440px;
-            padding-top: 1.35rem;
+            padding-top: 1.05rem;
             padding-bottom: 2rem;
+            position: relative;
+            z-index: 1;
         }
         [data-testid="stSidebar"] {
-            border-right: 1px solid rgba(148, 163, 184, 0.18);
+            background:
+                radial-gradient(circle at top, rgba(34, 211, 238, 0.12), transparent 16rem),
+                linear-gradient(180deg, rgba(2, 6, 23, 0.96), rgba(15, 23, 42, 0.92));
+            border-right: 1px solid rgba(125, 211, 252, 0.16);
+            box-shadow: 18px 0 55px rgba(2, 6, 23, 0.28);
+        }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color: #e0f2fe;
+        }
+        h1, h2, h3 {
+            letter-spacing: -0.035em;
+            color: #f8fafc;
+        }
+        h1 {
+            font-weight: 900 !important;
+            text-shadow: 0 16px 38px rgba(14, 165, 233, 0.22);
         }
         [data-testid="stMetric"] {
-            background: rgba(15, 23, 42, 0.58);
-            border: 1px solid rgba(148, 163, 184, 0.14);
-            border-radius: 16px;
-            padding: 0.75rem;
+            background:
+                radial-gradient(circle at top right, rgba(34, 211, 238, 0.12), transparent 12rem),
+                rgba(8, 19, 34, 0.72);
+            border: 1px solid rgba(125, 211, 252, 0.16);
+            border-radius: 18px;
+            padding: 0.78rem;
+            box-shadow: 0 16px 42px rgba(2, 6, 23, 0.18);
+        }
+        [data-testid="stMetricValue"] {
+            color: #f8fafc;
+            font-weight: 850;
+        }
+        [data-testid="stMetricLabel"] {
+            color: rgba(226, 232, 240, 0.7);
         }
         [data-testid="stDataFrame"] {
-            border-radius: 14px;
+            border-radius: 16px;
             overflow: hidden;
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            box-shadow: 0 18px 45px rgba(2, 6, 23, 0.16);
         }
         div[data-testid="stHorizontalBlock"] {
             gap: 0.65rem;
         }
         .stButton > button {
             border-radius: 999px;
-            min-height: 2.35rem;
-            border: 1px solid rgba(148, 163, 184, 0.28);
+            min-height: 2.45rem;
+            border: 1px solid rgba(125, 211, 252, 0.26);
+            background:
+                linear-gradient(135deg, rgba(14, 165, 233, 0.16), rgba(15, 23, 42, 0.62));
+            box-shadow: 0 12px 30px rgba(2, 6, 23, 0.18);
+            transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+        }
+        .stButton > button:hover {
+            transform: translateY(-1px);
+            border-color: rgba(34, 211, 238, 0.72);
+            box-shadow: 0 18px 38px rgba(14, 165, 233, 0.18);
+        }
+        [data-baseweb="tab-list"] {
+            gap: 0.35rem;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+        }
+        [data-baseweb="tab"] {
+            border-radius: 999px 999px 0 0;
+            padding: 0.45rem 0.8rem;
+            color: rgba(226, 232, 240, 0.76);
+        }
+        [aria-selected="true"][data-baseweb="tab"] {
+            color: #f8fafc;
+            background: rgba(34, 211, 238, 0.1);
+            border: 1px solid rgba(125, 211, 252, 0.18);
+            border-bottom-color: transparent;
+        }
+        [data-baseweb="input"] > div,
+        [data-baseweb="select"] > div,
+        textarea {
+            border-radius: 14px !important;
+            border-color: rgba(125, 211, 252, 0.18) !important;
+            background-color: rgba(15, 23, 42, 0.5) !important;
         }
         .app-topbar-anchor {
             margin-top: -0.4rem;
+        }
+        .topbar-card {
+            border-radius: 999px;
+            border: 1px solid rgba(125, 211, 252, 0.2);
+            background:
+                linear-gradient(135deg, rgba(8, 47, 73, 0.56), rgba(15, 23, 42, 0.72));
+            padding: 0.48rem 0.72rem;
+            box-shadow: 0 14px 35px rgba(2, 6, 23, 0.2);
+            color: rgba(226, 232, 240, 0.78);
+        }
+        .topbar-card b {
+            color: #f8fafc;
+        }
+        .topbar-pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 0.12rem 0.48rem;
+            margin-right: 0.42rem;
+            background: rgba(34, 197, 94, 0.13);
+            border: 1px solid rgba(74, 222, 128, 0.26);
+            color: #bbf7d0;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.045em;
+        }
+        .sidebar-brand {
+            border-radius: 20px;
+            border: 1px solid rgba(125, 211, 252, 0.18);
+            background:
+                radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 14rem),
+                rgba(15, 23, 42, 0.62);
+            padding: 0.85rem;
+            margin: 0.3rem 0 0.9rem 0;
+        }
+        .sidebar-brand b {
+            color: #f8fafc;
+            display: block;
+            font-size: 1.02rem;
+        }
+        .sidebar-brand span {
+            color: rgba(226, 232, 240, 0.68);
+            font-size: 0.8rem;
+        }
+        .dashboard-hero {
+            position: relative;
+            overflow: hidden;
+            border-radius: 30px;
+            border: 1px solid rgba(125, 211, 252, 0.22);
+            background:
+                radial-gradient(circle at 18% 8%, rgba(34, 211, 238, 0.26), transparent 18rem),
+                radial-gradient(circle at 92% 10%, rgba(250, 204, 21, 0.16), transparent 20rem),
+                linear-gradient(135deg, rgba(2, 6, 23, 0.92), rgba(8, 47, 73, 0.7));
+            padding: 1.15rem;
+            margin: 0.25rem 0 1rem 0;
+            box-shadow: 0 28px 75px rgba(2, 6, 23, 0.34);
+        }
+        .dashboard-hero::after,
+        .captain-hero::after,
+        .tower-hero::after {
+            content: "";
+            position: absolute;
+            inset: auto -18% -46% auto;
+            width: 34rem;
+            height: 34rem;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(34, 211, 238, 0.12), transparent 65%);
+            animation: commandFloat 8s ease-in-out infinite alternate;
+        }
+        .dashboard-hero h2 {
+            margin: 0.25rem 0 0.35rem 0;
+            font-size: clamp(1.75rem, 3.8vw, 3.25rem);
+            letter-spacing: -0.05em;
+        }
+        .dashboard-hero p {
+            margin: 0;
+            max-width: 920px;
+            color: rgba(226, 232, 240, 0.76);
+        }
+        .hero-kicker {
+            display: inline-flex;
+            border-radius: 999px;
+            padding: 0.18rem 0.62rem;
+            border: 1px solid rgba(125, 211, 252, 0.24);
+            background: rgba(14, 165, 233, 0.12);
+            color: #bae6fd;
+            font-size: 0.78rem;
+            font-weight: 850;
+            text-transform: uppercase;
+            letter-spacing: 0.055em;
+        }
+        @keyframes commandFloat {
+            from { transform: translate3d(0, 0, 0) scale(1); opacity: 0.78; }
+            to { transform: translate3d(-2rem, -1.2rem, 0) scale(1.08); opacity: 1; }
         }
         [data-testid="stChatMessage"] {
             border-radius: 18px;
@@ -1925,6 +2112,61 @@ def _apply_global_styles():
             font-size: 0.82rem;
             margin-top: 0.28rem;
         }
+        .captain-hero {
+            position: relative;
+            overflow: hidden;
+            border-radius: 30px;
+            border: 1px solid rgba(250, 204, 21, 0.26);
+            background:
+                radial-gradient(circle at 12% 18%, rgba(250, 204, 21, 0.24), transparent 18rem),
+                radial-gradient(circle at 88% 14%, rgba(14, 165, 233, 0.22), transparent 20rem),
+                linear-gradient(135deg, rgba(2, 6, 23, 0.94), rgba(30, 41, 59, 0.76));
+            padding: 1.15rem;
+            margin: 0.35rem 0 1rem 0;
+            box-shadow: 0 26px 70px rgba(2, 6, 23, 0.36);
+        }
+        .captain-hero h2 {
+            margin: 0.24rem 0 0.35rem 0;
+            font-size: clamp(1.8rem, 4vw, 3.4rem);
+            letter-spacing: -0.04em;
+        }
+        .captain-hero p {
+            margin: 0;
+            max-width: 920px;
+            color: rgba(226, 232, 240, 0.78);
+        }
+        .captain-badge {
+            display: inline-flex;
+            border-radius: 999px;
+            padding: 0.2rem 0.68rem;
+            border: 1px solid rgba(250, 204, 21, 0.36);
+            background: rgba(250, 204, 21, 0.12);
+            color: #fde68a;
+            font-weight: 850;
+            font-size: 0.78rem;
+            letter-spacing: 0.055em;
+            text-transform: uppercase;
+        }
+        .captain-order-card {
+            border-left: 4px solid var(--captain-color);
+            border-radius: 18px;
+            border-top: 1px solid rgba(148, 163, 184, 0.16);
+            border-right: 1px solid rgba(148, 163, 184, 0.16);
+            border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+            background:
+                radial-gradient(circle at top right, color-mix(in srgb, var(--captain-color) 13%, transparent), transparent 15rem),
+                rgba(15, 23, 42, 0.66);
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.7rem;
+        }
+        .captain-order-card b {
+            color: #f8fafc;
+        }
+        .captain-meta {
+            margin-top: 0.28rem;
+            color: rgba(226, 232, 240, 0.68);
+            font-size: 0.83rem;
+        }
         .fingerprint-panel {
             display: flex;
             align-items: center;
@@ -2024,8 +2266,10 @@ def _apply_global_styles():
         }
         .footer {
             text-align: center;
-            margin-top: 50px;
-            color: #666;
+            margin-top: 2.25rem;
+            color: rgba(226, 232, 240, 0.56);
+            border-top: 1px solid rgba(148, 163, 184, 0.12);
+            padding-top: 1rem;
         }
         .sidebar .sidebar-content {
             background-color: #f8f9fa;
@@ -2074,7 +2318,7 @@ def _apply_global_styles():
             .mission-card, .incident-card, .vessel-intel-card {
                 padding: 0.7rem;
             }
-            .tower-hero, .tower-decision, .tower-plan-card {
+            .tower-hero, .tower-decision, .tower-plan-card, .captain-hero, .captain-order-card {
                 padding: 0.75rem;
                 border-radius: 16px;
             }
@@ -3810,6 +4054,18 @@ def show_global_dashboard():
     readiness = operations.get("readiness_score", 0)
     mission_status = overview.get("mission_status", "Unknown")
 
+    hero_tone = "Critical response required" if readiness < 65 or mission_status == "Critical" else "Watch mode active" if readiness < 80 else "Ready for command demo"
+    st.markdown(
+        f"""
+        <div class="dashboard-hero">
+            <span class="hero-kicker">Global Mission Dashboard</span>
+            <h2>{safe_html(mission_status)} maritime operating picture</h2>
+            <p>{safe_html(hero_tone)}. Tracking routes, live/fallback vessels, cargo pressure, AI risk, alerts, and readiness in one submission-ready command view.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if readiness < 65 or mission_status == "Critical":
         st.error(f"Mission posture: {mission_status}. Operational readiness is {readiness:.1f}% ({operations.get('readiness_band')}).")
     elif readiness < 80:
@@ -4857,6 +5113,332 @@ def show_scenario_lab():
             st.info("No timeline returned.")
         else:
             st.dataframe(timeline_df, use_container_width=True, hide_index=True)
+
+
+def captain_order_color(verdict):
+    verdict = str(verdict or "").upper()
+    if "STOP" in verdict:
+        return "#ef4444"
+    if "ESCALATE" in verdict:
+        return "#f97316"
+    if "REROUTE" in verdict:
+        return "#facc15"
+    if "DELAY" in verdict:
+        return "#38bdf8"
+    return "#22c55e"
+
+
+def captain_route_deck(plan):
+    alternatives = list((plan or {}).get("alternatives", []) or [])
+    route_rows = []
+    for option in alternatives:
+        geometry = option.get("geometry") or []
+        if len(geometry) < 2:
+            continue
+        risk = float(option.get("risk_score", 0) or 0)
+        recommended = bool(option.get("recommended"))
+        route_rows.append({
+            **option,
+            "path": geometry,
+            "color": [34, 197, 94, 235] if recommended else [239, 68, 68, 205] if risk >= 7 else [245, 158, 11, 190] if risk >= 5 else [56, 189, 248, 170],
+            "width": 7 if recommended else 3,
+        })
+    zone_rows = []
+    for zone in (plan or {}).get("global_context", {}).get("highest_watch_zones", []):
+        if zone.get("lat") is None or zone.get("lon") is None:
+            continue
+        risk = float(zone.get("risk", 0) or 0)
+        zone_rows.append({
+            **zone,
+            "radius": max(65000, float(zone.get("radius_nm", 80) or 80) * 1852),
+            "color": [239, 68, 68, 58] if risk >= 8 else [245, 158, 11, 46],
+            "line_color": [239, 68, 68, 165] if risk >= 8 else [245, 158, 11, 140],
+        })
+    layers = []
+    if zone_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=zone_rows,
+            get_position="[lon, lat]",
+            get_radius="radius",
+            get_fill_color="color",
+            get_line_color="line_color",
+            line_width_min_pixels=2,
+            stroked=True,
+            filled=True,
+            pickable=True,
+        ))
+    if route_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=route_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
+            pickable=True,
+        ))
+    recommended = (plan or {}).get("recommended") or {}
+    geometry = recommended.get("geometry") or []
+    if geometry:
+        center_lon = sum(point[0] for point in geometry) / len(geometry)
+        center_lat = sum(point[1] for point in geometry) / len(geometry)
+    else:
+        center_lat, center_lon = 17, 58
+    return pdk.Deck(
+        map_style=MAP_STYLE,
+        layers=layers,
+        initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=1.15, pitch=28, bearing=-12),
+        tooltip={
+            "html": "<b>{route}{name}</b><br/>Risk: {risk_score}{risk}/10<br/>Distance: {distance_nm} nm<br/>{why}{note}",
+            "style": {"backgroundColor": "#07111f", "color": "#f8fafc"},
+        },
+    )
+
+
+def show_ai_captain():
+    st.title("AI Captain")
+    st.caption("The top command brain: one verdict, safest route, incident prediction, vessel drill-down, emergency war room, and audited actions.")
+    if "captain_origin" not in st.session_state:
+        st.session_state.captain_origin = "Mumbai"
+    if "captain_destination" not in st.session_state:
+        st.session_state.captain_destination = "Rotterdam"
+
+    input_col1, input_col2, input_col3 = st.columns([1, 1, 0.72])
+    with input_col1:
+        origin = st.text_input("Origin port", key="captain_origin")
+    with input_col2:
+        destination = st.text_input("Destination port", key="captain_destination")
+    with input_col3:
+        st.write("")
+        st.write("")
+        refresh_captain = st.button("Refresh Captain", use_container_width=True, icon=":material/radar:")
+
+    try:
+        captain = api_get(f"/ai/captain?origin={quote(origin)}&destination={quote(destination)}", fresh=refresh_captain)
+    except Exception as e:
+        show_api_error("AI Captain", e)
+        return
+
+    verdict = captain.get("verdict", "UNKNOWN")
+    color = captain_order_color(verdict)
+    st.markdown(
+        f"""
+        <div class="captain-hero" style="--captain-color:{color};">
+            <span class="captain-badge">AI CAPTAIN VERDICT</span>
+            <h2>{safe_html(verdict)} - {safe_html(captain.get('captain_band', 'Unknown'))}</h2>
+            <p>{safe_html(captain.get('captain_order', 'No captain order returned.'))}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    metrics = captain.get("metrics", {})
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    with m1:
+        st.metric("Captain Score", f"{captain.get('captain_score', 0)}/100", captain.get("priority", "P3"))
+    with m2:
+        st.metric("No Action", f"{metrics.get('no_action_risk', 0)}/100")
+    with m3:
+        st.metric("With Controls", f"{metrics.get('controlled_risk', 0)}/100")
+    with m4:
+        st.metric("Incident", f"{metrics.get('incident_likelihood', 0)}/100")
+    with m5:
+        st.metric("AIS", "Live" if metrics.get("ais_connected") else "Fallback", f"{metrics.get('live_vessels', 0)} ships")
+    with m6:
+        st.metric("Data Quality", f"{metrics.get('data_quality', 0)}%")
+
+    allow_captain_action = can("approve_actions") or can("manage_alert_workflows") or can("manage_vessels") or can("generate_reports")
+    order_col, action_col = st.columns([1.25, 0.75])
+    with order_col:
+        st.markdown("### Why The Captain Chose This")
+        for reason in captain.get("order_reasons", []):
+            st.markdown(
+                f"""
+                <div class="captain-order-card" style="--captain-color:{color};">
+                    <b>{safe_html(reason)}</b>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    with action_col:
+        st.markdown("### Captain Controls")
+        owner = st.text_input("Decision owner", value=current_role(), key="captain_owner")
+        note = st.text_area("Decision note", value=captain.get("captain_order", ""), height=110, key="captain_note")
+        if not allow_captain_action:
+            st.warning(f"{current_role()} can review AI Captain output, but cannot execute command actions.")
+        if st.button("Queue Captain Order", use_container_width=True, disabled=not allow_captain_action, icon=":material/bolt:"):
+            try:
+                result = api_post("/ai/captain/action", {
+                    "order": verdict.lower().replace(" ", "_"),
+                    "target": captain.get("focus_target"),
+                    "owner": owner,
+                    "note": note,
+                    "priority": captain.get("priority"),
+                    "origin": origin,
+                    "destination": destination,
+                }).json()
+                st.success(f"Queued: {result.get('record', {}).get('subject', captain.get('focus_target'))}")
+            except Exception as e:
+                st.error(f"Could not queue captain order: {e}")
+        if st.button("Create Emergency Incident", use_container_width=True, disabled=not allow_captain_action, icon=":material/report:"):
+            try:
+                result = api_post("/ai/captain/action", {
+                    "order": "create_incident",
+                    "target": captain.get("focus_target"),
+                    "owner": owner,
+                    "note": note,
+                    "priority": captain.get("priority"),
+                    "create_incident": True,
+                    "origin": origin,
+                    "destination": destination,
+                }).json()
+                st.warning(f"Incident created: {result.get('record', {}).get('title', captain.get('focus_target'))}")
+            except Exception as e:
+                st.error(f"Could not create emergency incident: {e}")
+        if st.button("Generate Mission Pack", use_container_width=True, disabled=not can("generate_reports"), icon=":material/folder_zip:"):
+            try:
+                pack = api_get("/reports/mission-pack", fresh=True)
+                st.success(f"Mission pack #{pack.get('report_id')} generated.")
+                st.text_area("Mission pack", value=pack.get("content", ""), height=220)
+            except Exception as e:
+                st.error(f"Could not generate mission pack: {e}")
+
+    route_tab, incident_tab, vessel_tab, war_tab, map_tab = st.tabs([
+        "Global Route Optimizer",
+        "Live Incident Prediction",
+        "Ship Intelligence",
+        "Emergency War Room",
+        "Map & Trust",
+    ])
+
+    with route_tab:
+        route_plan = captain.get("global_route")
+        if not route_plan:
+            st.warning(captain.get("route_error", "No route plan returned."))
+        else:
+            recommended = route_plan.get("recommended", {})
+            st.success(
+                f"Recommended route: {recommended.get('route')} | "
+                f"Risk {recommended.get('risk_score')}/10 | {recommended.get('distance_nm')} nm"
+            )
+            st.caption(recommended.get("why", route_plan.get("model_note", "")))
+            mode_rows = []
+            for mode_name, option in (route_plan.get("captain_modes") or {}).items():
+                mode_rows.append({
+                    "Mode": mode_name.replace("_", " ").title(),
+                    "Route": option.get("route"),
+                    "Risk": option.get("risk_score"),
+                    "Safety": option.get("safety_score"),
+                    "Speed": option.get("speed_score"),
+                    "Cost": option.get("cost_index"),
+                })
+            if mode_rows:
+                st.dataframe(pd.DataFrame(mode_rows), use_container_width=True, hide_index=True)
+            alternatives = pd.DataFrame(route_plan.get("alternatives", []))
+            if not alternatives.empty:
+                visible = [col for col in ["recommended", "route", "risk_score", "risk_band", "distance_nm", "detour_ratio", "safety_score", "speed_score", "cost_index", "captain_modes", "why"] if col in alternatives.columns]
+                st.dataframe(alternatives[visible], use_container_width=True, hide_index=True)
+            st.pydeck_chart(captain_route_deck(route_plan), use_container_width=True, height=420 if not st.session_state.get("mobile_performance_mode") else 310)
+
+    with incident_tab:
+        predictions = captain.get("incident_predictions", [])
+        if not predictions:
+            st.success("No incident prediction crossed the watch threshold.")
+        else:
+            pred_df = pd.DataFrame([
+                {
+                    "Priority": item.get("priority"),
+                    "Category": item.get("category"),
+                    "Likelihood": item.get("likelihood"),
+                    "ETA Window": item.get("eta_window"),
+                    "No Action Peak": item.get("no_action_peak"),
+                    "With Controls": item.get("controlled_floor"),
+                    "Reduction": item.get("risk_reduction"),
+                    "Captain Solution": item.get("captain_solution"),
+                }
+                for item in predictions
+            ])
+            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            timeline_rows = []
+            for item in predictions[:5]:
+                for point in item.get("timeline", []):
+                    timeline_rows.append({
+                        "Category": item.get("category"),
+                        "Horizon": point.get("horizon"),
+                        "No Action": point.get("score_no_action"),
+                        "With Controls": point.get("score_with_controls"),
+                    })
+            if timeline_rows:
+                line_df = pd.DataFrame(timeline_rows).melt(id_vars=["Category", "Horizon"], value_vars=["No Action", "With Controls"], var_name="Path", value_name="Risk")
+                fig = px.line(line_df, x="Horizon", y="Risk", color="Category", line_dash="Path", markers=True, range_y=[0, 100], title="Incident Risk If Nobody Acts vs With Captain Controls")
+                st.plotly_chart(fig, use_container_width=True)
+            selected_prediction = st.selectbox("Open playbook", [item.get("category") for item in predictions], key="captain_prediction_select")
+            selected = next((item for item in predictions if item.get("category") == selected_prediction), {})
+            st.info(selected.get("trigger", "No trigger returned."))
+            st.dataframe(pd.DataFrame({"Evidence": selected.get("evidence", [])}), use_container_width=True, hide_index=True)
+
+    with vessel_tab:
+        vessel_board = captain.get("vessel_board", [])
+        vessel_df = pd.DataFrame(vessel_board)
+        if vessel_df.empty:
+            st.info("No vessel board returned.")
+        else:
+            visible = [col for col in ["priority", "vessel", "route", "nearest_port", "delay_risk", "cargo", "cargo_priority", "speed_knots", "eta_hours", "recommended_action"] if col in vessel_df.columns]
+            st.dataframe(vessel_df[visible], use_container_width=True, hide_index=True)
+            selected_vessel = st.selectbox("Inspect ship intelligence", vessel_df["vessel"].dropna().astype(str).tolist(), key="captain_vessel_select")
+            try:
+                intel = api_get(f"/vessels/intelligence?vessel_identifier={quote(selected_vessel)}", fresh=refresh_captain)
+                st.markdown(
+                    f"""
+                    <div class="vessel-intel-card">
+                        <b>{safe_html(selected_vessel)}</b>
+                        <div>AI recommendation: {safe_html(intel.get('recommended_action'))}</div>
+                        <div class="captain-meta">Risk {safe_html(intel.get('risk_score'))}/10 ({safe_html(intel.get('risk_band'))}) | Source: {safe_html(intel.get('source'))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(pd.DataFrame({"Evidence": intel.get("evidence", [])}), use_container_width=True, hide_index=True)
+                timeline = pd.DataFrame(intel.get("timeline", []))
+                if not timeline.empty:
+                    st.dataframe(timeline.tail(20), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.caption(f"Ship drill-down unavailable: {e}")
+
+    with war_tab:
+        war_room = captain.get("emergency_war_room", {})
+        st.metric("War Room Mode", war_room.get("mode", "Unknown"), war_room.get("response_window", "Today"))
+        step_df = pd.DataFrame(war_room.get("steps", []))
+        if not step_df.empty:
+            st.dataframe(step_df, use_container_width=True, hide_index=True)
+        gate_df = pd.DataFrame(war_room.get("decision_gates", []))
+        if not gate_df.empty:
+            st.markdown("### Release Gates")
+            st.dataframe(gate_df, use_container_width=True, hide_index=True)
+        st.markdown("### Communications")
+        st.dataframe(pd.DataFrame({"Message": war_room.get("communications", [])}), use_container_width=True, hide_index=True)
+        st.markdown("### Final Checks")
+        st.dataframe(pd.DataFrame({"Check": captain.get("final_checks", [])}), use_container_width=True, hide_index=True)
+
+    with map_tab:
+        map_col, trust_col = st.columns([1.25, 0.75])
+        with map_col:
+            render_mission_overlay(captain.get("map_overlay", {}))
+        with trust_col:
+            trust = captain.get("trust", {})
+            t1, t2 = st.columns(2)
+            with t1:
+                st.metric("Hardening", f"{trust.get('deployment_hardening', 0)}%")
+            with t2:
+                st.metric("Quality", f"{trust.get('data_quality', 0)}%")
+            ais_status = trust.get("ais_status", {})
+            st.metric("AIS Provider", ais_status.get("status", "unknown"), f"{ais_status.get('vessel_count', 0)} vessels")
+            policy_rows = [{"Role": role, "Policy": policy} for role, policy in trust.get("role_policy", {}).items()]
+            st.dataframe(pd.DataFrame(policy_rows), use_container_width=True, hide_index=True)
+            explain = captain.get("explainability", {})
+            st.caption(explain.get("method", "No captain explainability returned."))
 
 
 def show_executive_command():
@@ -7363,8 +7945,10 @@ def show_smart_operations_inbox():
 def show_command_center_hub():
     st.title("Command Center")
     st.caption("One focused command brain for executive overview, autonomous intervention planning, and audited command actions.")
-    section = render_workspace_switch("Command workspace", ["Voyage Control Tower", "Smart Inbox", "Executive Command", "Strategic Autopilot"], "command_center_section")
-    if section == "Voyage Control Tower":
+    section = render_workspace_switch("Command workspace", ["AI Captain", "Voyage Control Tower", "Smart Inbox", "Executive Command", "Strategic Autopilot"], "command_center_section")
+    if section == "AI Captain":
+        show_ai_captain()
+    elif section == "Voyage Control Tower":
         show_voyage_control_tower()
     elif section == "Smart Inbox":
         show_smart_operations_inbox()
@@ -7386,8 +7970,8 @@ pages = {
 
 
 ROLE_PAGE_ACCESS = {
-    "Admin": ["Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
-    "Operator": ["Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
+    "Admin": ["Dashboard", "Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
+    "Operator": ["Dashboard", "Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
     "Public": ["Dashboard"],
 }
 
@@ -7437,6 +8021,15 @@ def main():
         return
 
     st.sidebar.title("Navigation")
+    st.sidebar.markdown(
+        """
+        <div class="sidebar-brand">
+            <b>Global AI Trade Intelligence</b>
+            <span>Final submission command build</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     allowed_pages = pages_for_current_role()
     st.sidebar.caption("Core role sections only. Notifications and Settings live in the top icons.")
     st.sidebar.markdown("### Access")

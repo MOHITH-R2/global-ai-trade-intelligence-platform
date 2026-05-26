@@ -203,6 +203,17 @@ class RiskIntelligenceActionRequest(BaseModel):
     route_id: int | None = None
 
 
+class CaptainActionRequest(BaseModel):
+    order: str = "queue_captain_order"
+    target: str = "Global network"
+    owner: str = "AI Captain"
+    note: str | None = None
+    priority: str | None = None
+    create_incident: bool = False
+    origin: str | None = None
+    destination: str | None = None
+
+
 class DemoResetRequest(BaseModel):
     confirm: str = ""
 
@@ -1319,6 +1330,9 @@ def root():
             "/ai/actions",
             "/ai/risk-intelligence",
             "/ai/incident-playbook",
+            "/ai/incident-predictions",
+            "/ai/captain",
+            "/ai/captain/action",
             "/ai/mission-map-overlay",
             "/ai/strategic-autopilot",
             "/ai/voyage-control-tower",
@@ -4093,6 +4107,384 @@ def get_mission_control(db: Session = Depends(get_db)):
 @app.get("/ai/war-room")
 def get_war_room(db: Session = Depends(get_db)):
     return build_war_room(db)
+
+
+def captain_route_modes(plan: dict | None) -> dict:
+    alternatives = list((plan or {}).get("alternatives", []) or [])
+    if not alternatives:
+        return {"modes": {}, "options": []}
+    distances = [float(item.get("distance_nm", 0) or 0) for item in alternatives]
+    min_distance = min(distances) if distances else 0
+    max_distance = max(distances) if distances else min_distance
+    distance_span = max(max_distance - min_distance, 1)
+    enriched = []
+    for option in alternatives:
+        risk = float(option.get("risk_score", 0) or 0)
+        distance = float(option.get("distance_nm", 0) or 0)
+        distance_penalty = ((distance - min_distance) / distance_span) * 35
+        safety_score = round(clamp_percent(102 - (risk * 9.4)), 1)
+        speed_score = round(clamp_percent(100 - distance_penalty - (risk * 1.2)), 1)
+        cost_index = round(34 + ((distance / max(min_distance, 1)) * 18) + (risk * 3.6), 1)
+        balanced_score = round((safety_score * 0.52) + (speed_score * 0.28) + (max(0, 100 - cost_index) * 0.2), 1)
+        enriched.append({
+            **option,
+            "safety_score": safety_score,
+            "speed_score": speed_score,
+            "cost_index": cost_index,
+            "balanced_score": balanced_score,
+        })
+
+    safest = min(enriched, key=lambda item: item["risk_score"])
+    fastest = max(enriched, key=lambda item: item["speed_score"])
+    lowest_cost = min(enriched, key=lambda item: item["cost_index"])
+    balanced = max(enriched, key=lambda item: item["balanced_score"])
+    for option in enriched:
+        option["captain_modes"] = [
+            mode for mode, selected in {
+                "Safest": safest,
+                "Fastest": fastest,
+                "Lowest cost": lowest_cost,
+                "Balanced": balanced,
+            }.items()
+            if selected.get("route") == option.get("route")
+        ]
+    return {
+        "modes": {
+            "safest": safest,
+            "fastest": fastest,
+            "lowest_cost": lowest_cost,
+            "balanced": balanced,
+        },
+        "options": enriched,
+    }
+
+
+def incident_eta_window(score: float) -> str:
+    if score >= 85:
+        return "Now to 6 hours"
+    if score >= 70:
+        return "6 to 24 hours"
+    if score >= 50:
+        return "24 to 72 hours"
+    if score >= 30:
+        return "This week watch"
+    return "Normal monitoring"
+
+
+def build_live_incident_predictions(db: Session, limit: int = 7) -> dict:
+    intelligence = build_ai_risk_intelligence(db)
+    categories = intelligence.get("categories", [])
+    forecast_rows = intelligence.get("forecast", [])
+    predictions = []
+    for category in categories:
+        score = float(category.get("risk_score", 0) or 0)
+        timeline = [
+            row for row in forecast_rows
+            if row.get("category") == category.get("category")
+        ]
+        peak_no_action = max([float(row.get("score_no_action", 0) or 0) for row in timeline] or [score])
+        controlled = min([float(row.get("score_with_controls", peak_no_action) or peak_no_action) for row in timeline] or [score])
+        likelihood = clamp_percent((score * 0.72) + (peak_no_action * 0.28))
+        predictions.append({
+            "category": category.get("category"),
+            "likelihood": likelihood,
+            "priority": mission_priority(likelihood),
+            "risk_level": category.get("risk_level"),
+            "eta_window": incident_eta_window(likelihood),
+            "no_action_peak": round(peak_no_action, 1),
+            "controlled_floor": round(controlled, 1),
+            "risk_reduction": round(max(0, peak_no_action - controlled), 1),
+            "trigger": category.get("caution"),
+            "captain_solution": category.get("ai_solution"),
+            "affected_routes": len(category.get("impacted_routes", []) or []),
+            "affected_vessels": len(category.get("impacted_vessels", []) or []),
+            "evidence": category.get("evidence", [])[:4],
+            "timeline": timeline,
+            "playbook": category.get("playbook", {}),
+        })
+    predictions = sorted(predictions, key=lambda row: row["likelihood"], reverse=True)[:limit]
+    return {
+        "generated_at": intelligence.get("generated_at"),
+        "summary": intelligence.get("summary", {}),
+        "predictions": predictions,
+        "map_layers": intelligence.get("map_layers", {}),
+        "explainability": {
+            "method": "Ranks incident categories by current AI Risk Brain score plus no-action forecast drift.",
+            "inputs": ["AI Risk Brain categories", "risk forecast windows", "route assessments", "AIS health", "vessel delay risk", "cargo priority"],
+            "limits": ["External security/weather providers are still fallback unless configured in Settings."],
+        },
+    }
+
+
+@app.get("/ai/incident-predictions")
+def get_live_incident_predictions(limit: int = 7, db: Session = Depends(get_db)):
+    return build_live_incident_predictions(db, limit=max(1, min(limit, 10)))
+
+
+def captain_verdict(score: float, route_plan: dict | None, top_incident: dict | None) -> tuple[str, str]:
+    direct = (route_plan or {}).get("direct") or {}
+    recommended = (route_plan or {}).get("recommended") or {}
+    direct_risk = float(direct.get("risk_score", 0) or 0)
+    recommended_risk = float(recommended.get("risk_score", direct_risk) or direct_risk)
+    route_saves = direct_risk and (direct_risk - recommended_risk) >= 1.0
+    incident_score = float((top_incident or {}).get("likelihood", 0) or 0)
+    if score >= 88 or incident_score >= 92:
+        return "STOP VOYAGE", "Stop or hold release until Admin and Operator clear the emergency gates."
+    if score >= 76:
+        return "ESCALATE", "Escalate to Emergency War Room and assign owners before the next sailing decision."
+    if route_saves or score >= 62:
+        return "REROUTE", "Use the safest route mode and keep high-risk cargo under verified-role control."
+    if score >= 42:
+        return "DELAY", "Delay release until AIS, route, cargo, and notification checks are refreshed."
+    return "SAFE", "Proceed with normal watch, keep route and AIS signals refreshed, and maintain public-safe reporting."
+
+
+def default_captain_ports(assessments: list[dict]) -> tuple[str | None, str | None]:
+    for assessment in assessments:
+        route = str(assessment.get("route") or "")
+        if " to " in route:
+            origin, destination = [part.strip() for part in route.split(" to ", 1)]
+            return origin, destination
+    return "Mumbai", "Rotterdam"
+
+
+def build_ai_captain(db: Session, origin: str | None = None, destination: str | None = None) -> dict:
+    mission = build_mission_control(db)
+    war_room = build_war_room(db)
+    autopilot = build_strategic_autopilot(db)
+    incident_packet = build_live_incident_predictions(db)
+    assessments = get_ai_route_assessments(db)
+    predictions = get_vessel_predictions(limit=80, db=db).get("predictions", [])
+    digest = notification_digest(limit=180, db=db)
+    quality = get_data_quality(db)
+    hardening = get_deployment_hardening(db)
+    ais_status = get_aisstream_status()
+
+    origin = origin or None
+    destination = destination or None
+    if not origin or not destination:
+        origin, destination = default_captain_ports(assessments)
+
+    route_plan = None
+    route_error = None
+    if origin and destination:
+        try:
+            route_plan = plan_global_route(origin, destination)
+            route_modes = captain_route_modes(route_plan)
+            route_plan["captain_modes"] = route_modes["modes"]
+            route_plan["alternatives"] = route_modes["options"]
+        except HTTPException as exc:
+            route_error = str(exc.detail)
+        except Exception as exc:
+            route_error = str(exc)
+
+    top_incident = (incident_packet.get("predictions") or [{}])[0]
+    top_vessel = predictions[0] if predictions else {}
+    projection = autopilot.get("risk_projection", {})
+    p1_incidents = len([item for item in incident_packet.get("predictions", []) if item.get("priority") == "P1"])
+    p1_notifications = len([item for item in get_notifications(limit=80, db=db) if item.get("severity") == "critical"])
+    mission_score = float(mission.get("mission_score", 0) or 0)
+    no_action = float(projection.get("without_autopilot", 0) or 0)
+    incident_likelihood = float(top_incident.get("likelihood", 0) or 0)
+    delay_pressure = float(top_vessel.get("delay_risk", 0) or 0) * 10
+    notification_pressure = float(digest.get("pressure_score", 0) or 0)
+    captain_score = clamp_percent(
+        (mission_score * 0.25)
+        + (no_action * 0.22)
+        + (incident_likelihood * 0.2)
+        + (delay_pressure * 0.12)
+        + (notification_pressure * 0.1)
+        + (p1_incidents * 4.5)
+        + (p1_notifications * 2.5)
+        + (max(0, 100 - float(quality.get("score", 100) or 100)) * 0.04)
+    )
+    verdict, order = captain_verdict(captain_score, route_plan, top_incident)
+    priority = mission_priority(captain_score)
+    recommended_route = (route_plan or {}).get("recommended") or {}
+
+    order_reasons = [
+        f"Mission pressure {mission_score}/100 from {mission.get('top_problem', {}).get('lane', 'Mission Control')}.",
+        f"No-action risk {no_action}/100 versus controlled risk {projection.get('with_autopilot', 0)}/100.",
+        f"Top incident prediction: {top_incident.get('category', 'None')} at {incident_likelihood}/100.",
+        f"Highest vessel delay pressure: {top_vessel.get('vessel', 'None')} at {top_vessel.get('delay_risk', 0)}/10.",
+        f"Notification pressure {notification_pressure}/100 with {p1_notifications} critical note(s).",
+    ]
+    if recommended_route:
+        order_reasons.append(f"Safest global route candidate: {recommended_route.get('route')} at {recommended_route.get('risk_score')}/10.")
+    if route_error:
+        order_reasons.append(f"Route optimizer warning: {route_error}.")
+
+    emergency_steps = [
+        {"phase": "0-5 min", "owner": "AI Captain", "action": order, "success": "Every high-risk release has a hold/reroute decision."},
+        {"phase": "5-15 min", "owner": "Operator", "action": "Open top vessel, route, and notification evidence.", "success": "Live AIS or fallback status is documented."},
+        {"phase": "15-30 min", "owner": "Admin" if priority == "P1" else "Operator", "action": "Approve, reject, or escalate the captain order.", "success": "Audited decision is created."},
+        {"phase": "30-60 min", "owner": "Command desk", "action": "Generate mission pack and send one consistent update.", "success": "Stakeholders receive route, cargo, and risk summary."},
+    ]
+    if priority == "P1":
+        emergency_steps.insert(1, {"phase": "Immediate", "owner": "Admin", "action": "Freeze sensitive cargo visibility and stop public details.", "success": "Public role remains sanitized."})
+
+    vessel_board = []
+    for vessel in predictions[:10]:
+        vessel_board.append({
+            "vessel": vessel.get("vessel"),
+            "identifier": vessel.get("vessel") or vessel.get("mmsi"),
+            "route": vessel.get("route"),
+            "nearest_port": vessel.get("nearest_port"),
+            "delay_risk": vessel.get("delay_risk"),
+            "priority": mission_priority(float(vessel.get("delay_risk", 0) or 0) * 10),
+            "cargo": vessel.get("cargo"),
+            "cargo_priority": vessel.get("cargo_priority"),
+            "cargo_verified": vessel.get("cargo_verified"),
+            "speed_knots": vessel.get("speed_knots"),
+            "eta_hours": vessel.get("eta_hours"),
+            "recommended_action": vessel.get("recommended_action"),
+            "position_lat": vessel.get("position_lat"),
+            "position_lon": vessel.get("position_lon"),
+            "display_position_lat": vessel.get("display_position_lat"),
+            "display_position_lon": vessel.get("display_position_lon"),
+            "motion_trail": vessel.get("motion_trail", []),
+            "motion_source": vessel.get("motion_source"),
+        })
+
+    return {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "verdict": verdict,
+        "priority": priority,
+        "captain_score": captain_score,
+        "captain_band": mission_band(captain_score),
+        "captain_order": order,
+        "focus_target": recommended_route.get("route") or mission.get("top_problem", {}).get("signal") or "Global network",
+        "origin": origin,
+        "destination": destination,
+        "order_reasons": order_reasons,
+        "final_checks": [
+            "Confirm AIS source and SSL mode before treating vessel movement as live.",
+            "Use safest route mode for P1/P2 cargo unless Admin accepts the exception.",
+            "Keep Public role read-only and hide sensitive cargo/security details.",
+            "Generate Mission Pack after any Stop, Escalate, or Reroute decision.",
+        ],
+        "metrics": {
+            "mission_score": mission_score,
+            "no_action_risk": no_action,
+            "controlled_risk": projection.get("with_autopilot", 0),
+            "incident_likelihood": incident_likelihood,
+            "notification_pressure": notification_pressure,
+            "data_quality": quality.get("score"),
+            "hardening": hardening.get("score"),
+            "ais_connected": bool(ais_status.get("connected")),
+            "live_vessels": ais_status.get("vessel_count", 0),
+        },
+        "global_route": route_plan,
+        "route_error": route_error,
+        "incident_predictions": incident_packet.get("predictions", []),
+        "vessel_board": vessel_board,
+        "emergency_war_room": {
+            "mode": "Emergency War Room" if priority == "P1" else war_room.get("command_mode"),
+            "response_window": war_room.get("response_window"),
+            "steps": emergency_steps,
+            "decision_gates": war_room.get("decision_gates", []),
+            "communications": [
+                "One message to fleet operators with route and AIS evidence.",
+                "One message to cargo/customer teams with sanitized delivery impact.",
+                "One admin audit note with exact decision, owner, and confidence.",
+            ],
+        },
+        "map_overlay": autopilot.get("map_overlay", {}),
+        "trust": {
+            "data_quality": quality.get("score"),
+            "deployment_hardening": hardening.get("score"),
+            "ais_status": ais_status,
+            "role_policy": {
+                "Admin": "Can stop voyage, toggle production controls, and approve critical release.",
+                "Operator": "Can investigate, reroute, queue actions, and generate operational reports.",
+                "Public": "Read-only sanitized dashboard only.",
+            },
+        },
+        "explainability": {
+            "method": "AI Captain fuses Mission Control, Strategic Autopilot, AI Risk Brain, vessel ETA predictions, notification pressure, AIS health, data quality, and route optimizer output into one operational verdict.",
+            "verdict_scale": ["SAFE", "DELAY", "REROUTE", "ESCALATE", "STOP VOYAGE"],
+            "limits": [
+                "This is decision support; verified operators/admins still approve real-world actions.",
+                "Weather, port, and security feeds are fallback unless external providers are configured.",
+            ],
+        },
+    }
+
+
+@app.get("/ai/captain")
+def get_ai_captain(
+    origin: str | None = None,
+    destination: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return build_ai_captain(db, origin=origin, destination=destination)
+
+
+@app.post("/ai/captain/action")
+def execute_ai_captain_action(
+    payload: CaptainActionRequest,
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    require_any_permission(
+        request,
+        ["approve_actions", "manage_alert_workflows", "manage_vessels", "generate_reports"],
+        "AI Captain actions",
+    )
+    captain = build_ai_captain(db, origin=payload.origin, destination=payload.destination)
+    action_name = command_action_label(payload.order or "queue_captain_order")
+    priority = str(payload.priority or captain.get("priority") or "P2").upper()
+    if priority not in {"P1", "P2", "P3"}:
+        priority = "P2"
+    target = payload.target or captain.get("focus_target") or "Global network"
+    note = payload.note or captain.get("captain_order") or "AI Captain queued a command order."
+    severity = "high" if priority == "P1" else "medium" if priority == "P2" else "low"
+
+    if payload.create_incident or action_name in {"stop_voyage", "create_incident", "emergency_incident"}:
+        incident = record_incident_once(
+            db,
+            title=f"AI Captain {captain.get('verdict')}: {target}",
+            category="AI Captain",
+            severity=severity,
+            location=target,
+            vessel_name="",
+            route=target if " to " in str(target) else "",
+            description=note,
+            source=payload.owner or "AI Captain",
+        )
+        record_audit_event(
+            db,
+            action="ai_captain_incident_created",
+            resource=target,
+            detail=f"{priority} {captain.get('verdict')}: {note}",
+            severity="critical" if priority == "P1" else "warning",
+            request=request,
+        )
+        db.commit()
+        db.refresh(incident)
+        return {"status": "incident_created", "captain": captain, "record": serialize_incident(incident)}
+
+    action = upsert_ai_action(
+        db,
+        subject=target,
+        priority=priority,
+        action_type=f"AI Captain: {action_name}",
+        recommendation=note,
+        evidence=" | ".join(captain.get("order_reasons", [])[:5]),
+        owner=payload.owner or "AI Captain",
+        source="AI Captain",
+    )
+    record_audit_event(
+        db,
+        action="ai_captain_action_queued",
+        resource=target,
+        detail=f"{priority} {captain.get('verdict')}: {note}",
+        severity="critical" if priority == "P1" else "warning",
+        request=request,
+    )
+    db.commit()
+    db.refresh(action)
+    return {"status": "queued", "captain": captain, "record": serialize_ai_action(action)}
 
 
 def ai_risk_level(score: float) -> str:

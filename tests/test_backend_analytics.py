@@ -7,6 +7,7 @@ from backend.main import (
     AuthRegisterRequest,
     AuthSocialRequest,
     AuthSessionValidateRequest,
+    CaptainActionRequest,
     CargoManifestUpsert,
     CommandActionRequest,
     DataMaintenanceRequest,
@@ -22,11 +23,14 @@ from backend.main import (
     act_on_notification,
     ask_copilot,
     execute_strategic_autopilot,
+    execute_ai_captain_action,
     generate_smart_report,
     get_ai_route_assessments,
     get_ai_actions,
     get_ai_incident_playbook,
+    get_ai_captain,
     get_ai_risk_intelligence,
+    get_live_incident_predictions,
     get_analytics_overview,
     get_alert_workflows,
     get_auth_accounts,
@@ -238,6 +242,37 @@ def test_ai_risk_intelligence_covers_incident_categories_and_actions():
     assert playbook["immediate_steps"]
     assert action["status"] == "queued"
     assert action["record"]["source"] == "AI Risk Brain"
+
+
+def test_ai_captain_final_command_layer_shapes():
+    db = SessionLocal()
+    try:
+        captain = get_ai_captain(origin="Mumbai", destination="Rotterdam", db=db)
+        predictions = get_live_incident_predictions(db=db)
+        action = execute_ai_captain_action(
+            CaptainActionRequest(
+                order="queue_captain_order",
+                target="Mumbai to Rotterdam",
+                owner="Tester",
+                note="Test captain order.",
+                priority="P2",
+                origin="Mumbai",
+                destination="Rotterdam",
+            ),
+            db=db,
+        )
+    finally:
+        db.close()
+
+    assert captain["verdict"] in {"SAFE", "DELAY", "REROUTE", "ESCALATE", "STOP VOYAGE"}
+    assert captain["global_route"]["recommended"]
+    assert captain["incident_predictions"]
+    assert captain["vessel_board"]
+    assert captain["emergency_war_room"]["steps"]
+    assert {"mission_score", "no_action_risk", "incident_likelihood"} <= set(captain["metrics"])
+    assert predictions["predictions"]
+    assert action["status"] == "queued"
+    assert action["record"]["source"] == "AI Captain"
 
 
 def test_command_upgrade_endpoints_shape():

@@ -44,6 +44,7 @@ A demo-grade trade intelligence platform with a Streamlit frontend, FastAPI back
 - Command Center with Executive Command + Strategic Autopilot modes, plus Command Copilot with global safest-route planning, incident replay, predictive ETA/delay scoring, alert escalation workflows, access control preview, data quality monitor, and deployment readiness checks
 - Voyage Control Tower that acts as an Autonomous Maritime Command OS, fusing AIS anomalies, safest/fastest/lowest-cost route modes, notification pressure, reliability, approval queue, and a no-action timeline into one intervention screen
 - AI Risk Brain that classifies natural hazards, hijack/piracy, war/geopolitical disruption, port infrastructure, cyber/AIS integrity, cargo crime, and fuel shocks into risk levels with caution windows, predictions, and defensive playbooks
+- AI Captain final command layer that fuses Mission Control, Strategic Autopilot, AI Risk Brain, global route optimization, live incident prediction, ship intelligence, notifications, AIS health, and role permissions into one verdict: Safe, Delay, Reroute, Escalate, or Stop Voyage
 - Product hardening suite with Admin user management, setup checklist, notification delivery outbox, security audit summary, database backup readiness, external weather/port/security provider hooks, and report-change intelligence
 - Deployment hardening dashboard plus Alembic migration scaffold for safer production evolution
 - SQLite fallback with optional PostgreSQL support
@@ -67,6 +68,9 @@ A demo-grade trade intelligence platform with a Streamlit frontend, FastAPI back
 - `GET /ai/risk-intelligence` returns the AI Risk Brain with incident-category risk levels, no-action vs controlled predictions, caution windows, global threat-zone layers, and decision memory.
 - `GET /ai/incident-playbook?incident_type=War%20/%20Geopolitical` returns defensive solutions for natural, hijack/piracy, war/geopolitical, port, cyber/AIS, cargo, and fuel-shock problems.
 - `POST /ai/risk-intelligence/action` queues a verified defensive playbook action or incident record from the AI Risk Brain.
+- `GET /ai/incident-predictions` returns live incident likelihood, ETA windows, no-action peak, controlled floor, and playbooks for the top maritime risk categories.
+- `GET /ai/captain?origin=Mumbai&destination=Rotterdam` returns the final AI Captain verdict, global safest-route optimizer, emergency war-room steps, ship intelligence board, trust checks, and map overlay.
+- `POST /ai/captain/action` queues or creates an audited AI Captain order for verified Admin/Operator roles.
 
 ## Operational Intelligence Endpoints
 - `GET /operations/intelligence` returns readiness, cargo exposure, queued AI actions, and timeline summary.
@@ -173,6 +177,12 @@ You can also use the bundled helper:
 .\run_demo.ps1
 ```
 This starts the backend on `http://127.0.0.1:8001` and the frontend on `http://127.0.0.1:8502`.
+It also waits for both services and opens the Streamlit app in your browser.
+If those ports are already running, the script reuses them instead of starting duplicate servers. Use this when you want a clean restart:
+```powershell
+.\run_demo.ps1 -Restart
+```
+Use `.\run_demo.ps1 -NoBrowser` if you only want to print the URLs without opening a browser.
 
 ## Docker
 You can run the backend and frontend with Docker Compose:
