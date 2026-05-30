@@ -46,6 +46,8 @@ A demo-grade trade intelligence platform with a Streamlit frontend, FastAPI back
 - AI Risk Brain that classifies natural hazards, hijack/piracy, war/geopolitical disruption, port infrastructure, cyber/AIS integrity, cargo crime, and fuel shocks into risk levels with caution windows, predictions, and defensive playbooks
 - AI Captain final command layer that fuses Mission Control, Strategic Autopilot, AI Risk Brain, global route optimization, live incident prediction, ship intelligence, notifications, AIS health, and role permissions into one verdict: Safe, Delay, Reroute, Escalate, or Stop Voyage
 - Product hardening suite with Admin user management, setup checklist, notification delivery outbox, security audit summary, database backup readiness, external weather/port/security provider hooks, and report-change intelligence
+- Production Upgrade Hub that tracks auth, external APIs, AI model readiness, true sea-lane routing, live alert delivery, mobile readiness, cargo tracking, company operations, and deployment hardening in one Settings panel
+- Sea-lane decision engine that compares global route corridors by safest, balanced, fastest, or lowest-cost objectives while applying cargo priority and avoid-zone penalties for war, piracy, hijack, storms, and geopolitical disruption
 - Deployment hardening dashboard plus Alembic migration scaffold for safer production evolution
 - SQLite fallback with optional PostgreSQL support
 
@@ -57,6 +59,7 @@ A demo-grade trade intelligence platform with a Streamlit frontend, FastAPI back
 - `POST /ai/command` refreshes the live AI command packet on demand.
 - `POST /copilot/ask` answers natural-language command questions from live platform data and global maritime route intelligence.
 - `GET /copilot/global-route?origin=Mumbai&destination=Rotterdam` compares global maritime route alternatives and recommends the safest explainable path.
+- `GET /routes/sea-lane-engine?origin=Mumbai&destination=Rotterdam&objective=safest&cargo_priority=P1&avoid=war,piracy` returns a cargo-aware route recommendation with avoid-zone hits, captain rules, and dispatch controls.
 - `GET /routes/alternatives?route_id=1` returns current and alternate route options with risk deltas.
 - `POST /scenario/simulate` runs a digital-twin crisis simulation and returns projected readiness, impacted routes, exposed vessels/cargo, a response plan, timeline, and map layers.
 - `GET /executive/brief` returns the high-level commander summary, top route risks, top exposed vessels, and priority AI actions.
@@ -101,7 +104,9 @@ A demo-grade trade intelligence platform with a Streamlit frontend, FastAPI back
 - `GET /admin/users` and `POST /admin/users` provide Admin-only user management for creating, disabling, promoting, and demoting accounts.
 - `GET /security/audit-summary` summarizes risky audit events, top actions, actor roles, and security recommendations.
 - `GET /setup/checklist` returns the first-time setup wizard state across backend, database, AIS, auth, notifications, external data, and production mode.
+- `GET /production/upgrade-hub` returns the full production-upgrade status across real auth, external APIs, AI readiness, route engine, alert delivery, mobile, cargo, operations, reliability, and deployment.
 - `GET /notifications/delivery-status` and `POST /notifications/deliver` prepare critical alert delivery through a local outbox or configured external channels.
+- `GET /notifications/delivery-plan` returns the critical alert escalation plan across outbox, webhook, email, Slack, Discord, Telegram, WhatsApp, and SMS channels.
 - `GET /database/operations` and `POST /database/backup` expose database health, production database guidance, and Admin-confirmed SQLite backups.
 - `GET /external-data/status` and `GET /weather/maritime` expose environment-driven provider readiness plus transparent fallback weather signals.
 - `GET /reports/intelligence` compares recent reports and highlights what changed or was resolved.
@@ -183,6 +188,15 @@ If those ports are already running, the script reuses them instead of starting d
 .\run_demo.ps1 -Restart
 ```
 Use `.\run_demo.ps1 -NoBrowser` if you only want to print the URLs without opening a browser.
+
+## Presentation Walkthrough
+For a short submission demo, follow:
+
+```text
+docs/DEMO_WALKTHROUGH.md
+```
+
+Recommended flow: Dashboard -> Command Center > AI Captain -> Fleet & Operations -> Risk & Alerts > AI Risk Brain -> Reports.
 
 ## Docker
 You can run the backend and frontend with Docker Compose:

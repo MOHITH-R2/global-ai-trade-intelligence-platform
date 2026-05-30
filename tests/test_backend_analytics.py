@@ -47,6 +47,7 @@ from backend.main import (
     get_data_quality,
     get_data_cleanup_summary,
     get_decision_timeline,
+    get_delivery_plan,
     get_deployment_hardening,
     get_deployment_readiness,
     get_executive_brief,
@@ -64,12 +65,14 @@ from backend.main import (
     get_operations_inbox,
     get_operations_timeline,
     get_port_congestion,
+    get_production_upgrade_hub,
     get_replay_timeline,
     get_route_alternatives,
     get_route_optimizer,
     get_risk_forecast,
     get_role_command_view,
     get_runtime_settings,
+    get_sea_lane_engine,
     get_system_reliability,
     get_vessel_intelligence,
     get_vessel_history,
@@ -300,6 +303,32 @@ def test_command_upgrade_endpoints_shape():
     assert quality["status"] in {"pass", "warn", "fail"}
     assert "checks" in deployment
     assert "answer" in copilot
+
+
+def test_production_upgrade_hub_and_sea_lane_engine_shapes():
+    db = SessionLocal()
+    try:
+        hub = get_production_upgrade_hub(db=db)
+        delivery = get_delivery_plan(severity="critical", db=db)
+        route = get_sea_lane_engine(
+            origin="Mumbai",
+            destination="Rotterdam",
+            objective="safest",
+            cargo_priority="P1",
+            avoid="war,piracy,security,geopolitical",
+        )
+    finally:
+        db.close()
+
+    assert hub["modules"]
+    assert hub["status"] in {"production-ready", "staging-ready", "integration-needed", "demo-fallback"}
+    assert hub["external_data"]["total"] >= hub["external_data"]["connected"]
+    assert delivery["channels"]
+    assert "outbox" in delivery["recommended_sequence"]
+    assert route["recommended"]
+    assert route["controls"]
+    assert route["recommended"]["route_controls"]
+    assert route["cargo_priority"] == "P1"
 
 
 def test_persistent_auth_provider_status_and_login_flows():

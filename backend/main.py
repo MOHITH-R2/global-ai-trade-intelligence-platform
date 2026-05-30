@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import logging
 from pydantic import BaseModel
+import requests
 from dotenv import load_dotenv
 import math
 import random
@@ -1345,12 +1346,15 @@ def root():
             "/setup/checklist",
             "/database/operations",
             "/external-data/status",
+            "/production/upgrade-hub",
             "/weather/maritime",
             "/copilot/ask",
             "/copilot/global-route",
+            "/routes/sea-lane-engine",
             "/notifications",
             "/notifications/digest",
             "/notifications/action",
+            "/notifications/delivery-plan",
             "/notifications/delivery-status",
             "/operations/inbox",
             "/operations/inbox/action",
@@ -1887,6 +1891,21 @@ def get_notification_delivery_status():
             "channel": "telegram",
             "connected": bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID")),
             "detail": "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for mobile alert delivery.",
+        },
+        {
+            "channel": "whatsapp",
+            "connected": bool(os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")),
+            "detail": "Set WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID for WhatsApp Business alert delivery.",
+        },
+        {
+            "channel": "sms",
+            "connected": bool(os.getenv("SMS_PROVIDER_API_KEY")),
+            "detail": "Set SMS_PROVIDER_API_KEY for emergency SMS delivery through your chosen provider.",
+        },
+        {
+            "channel": "slack",
+            "connected": bool(os.getenv("SLACK_WEBHOOK_URL")),
+            "detail": "Set SLACK_WEBHOOK_URL for company operations-room delivery.",
         },
     ]
     return {
@@ -2601,7 +2620,19 @@ def social_auth_login(
         raise HTTPException(status_code=403, detail="Provider is not allowed for public login")
     if production_mode_enabled() and not auth_provider_connected(provider):
         raise HTTPException(status_code=403, detail=f"{provider} is not connected for production login")
-    identity = normalize_email(payload.identity or f"{provider.lower().replace(' ', '.')}@public.demo")
+
+    identity = payload.identity
+    if provider == "Google OAuth" and identity and len(identity) > 50:
+        try:
+            # Validate the real JWT token with Google
+            resp = requests.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={identity}", timeout=5)
+            resp.raise_for_status()
+            identity = normalize_email(resp.json().get("email"))
+        except Exception as e:
+            raise HTTPException(status_code=401, detail="Invalid Google OAuth token")
+    else:
+        identity = normalize_email(identity or f"{provider.lower().replace(' ', '.')}@public.demo")
+
     now = datetime.datetime.now(datetime.timezone.utc)
     account = db.query(UserAccount).filter(UserAccount.email == identity).first()
     if not account:
@@ -2871,11 +2902,16 @@ def create_database_backup(
 @app.get("/external-data/status")
 def get_external_data_status():
     providers = [
-        {"name": "Weather API", "env": "WEATHER_API_KEY", "connected": bool(os.getenv("WEATHER_API_KEY")), "used_for": "Maritime weather risk"},
-        {"name": "Port congestion API", "env": "PORT_CONGESTION_API_KEY", "connected": bool(os.getenv("PORT_CONGESTION_API_KEY")), "used_for": "Berth/queue pressure"},
-        {"name": "Maritime security API", "env": "MARITIME_SECURITY_API_KEY", "connected": bool(os.getenv("MARITIME_SECURITY_API_KEY")), "used_for": "Piracy/geopolitical watch"},
+        {"name": "Weather API", "env": "WEATHER_API_KEY", "connected": bool(os.getenv("WEATHER_API_KEY")), "used_for": "Storm, wave, wind, cyclone, and sea-state route risk"},
+        {"name": "Port congestion API", "env": "PORT_CONGESTION_API_KEY", "connected": bool(os.getenv("PORT_CONGESTION_API_KEY")), "used_for": "Berth queues, canal delays, and port infrastructure pressure"},
+        {"name": "Maritime security API", "env": "MARITIME_SECURITY_API_KEY", "connected": bool(os.getenv("MARITIME_SECURITY_API_KEY")), "used_for": "Piracy, hijack, suspicious activity, and security zones"},
+        {"name": "Geopolitical risk API", "env": "GEOPOLITICAL_RISK_API_KEY", "connected": bool(os.getenv("GEOPOLITICAL_RISK_API_KEY")), "used_for": "War, sanctions, naval disruption, and country-risk scoring"},
+        {"name": "Fuel price API", "env": "FUEL_PRICE_API_KEY", "connected": bool(os.getenv("FUEL_PRICE_API_KEY")), "used_for": "Bunker price shock, cost-aware routing, and market risk"},
+        {"name": "Container tracking API", "env": "CONTAINER_TRACKING_API_KEY", "connected": bool(os.getenv("CONTAINER_TRACKING_API_KEY")), "used_for": "Container-level cargo tracking and chain of custody"},
         {"name": "Notification webhook", "env": "NOTIFICATION_WEBHOOK_URL", "connected": bool(os.getenv("NOTIFICATION_WEBHOOK_URL")), "used_for": "Outbound critical alert delivery"},
-        {"name": "Email SMTP", "env": "EMAIL_SMTP_HOST", "connected": bool(os.getenv("EMAIL_SMTP_HOST")), "used_for": "Password reset / critical email"},
+        {"name": "Email SMTP", "env": "EMAIL_SMTP_HOST", "connected": bool(os.getenv("EMAIL_SMTP_HOST")), "used_for": "Password reset and critical email"},
+        {"name": "WhatsApp Business", "env": "WHATSAPP_ACCESS_TOKEN", "connected": bool(os.getenv("WHATSAPP_ACCESS_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID")), "used_for": "WhatsApp emergency ship/cargo alerts"},
+        {"name": "SMS Provider", "env": "SMS_PROVIDER_API_KEY", "connected": bool(os.getenv("SMS_PROVIDER_API_KEY")), "used_for": "Emergency SMS fallback for P1 incidents"},
     ]
     connected = sum(1 for provider in providers if provider["connected"])
     return {
@@ -2886,6 +2922,199 @@ def get_external_data_status():
         "providers": providers,
         "note": "Provider hooks are environment-driven. When keys are absent, the app keeps using transparent simulated fallback signals.",
     }
+
+
+def provider_score(external: dict, delivery: dict, auth: dict) -> int:
+    external_connected = int(external.get("connected", 0) or 0)
+    external_total = max(1, int(external.get("total", 1) or 1))
+    delivery_connected = len(delivery.get("connected_channels", []) or [])
+    auth_connected = len(auth.get("connected_providers", []) or [])
+    score = 20
+    score += round((external_connected / external_total) * 34)
+    score += min(24, delivery_connected * 6)
+    score += min(22, auth_connected * 5)
+    return int(max(0, min(100, score)))
+
+
+def upgrade_status(score: float) -> str:
+    if score >= 85:
+        return "production-ready"
+    if score >= 65:
+        return "staging-ready"
+    if score >= 40:
+        return "integration-needed"
+    return "demo-fallback"
+
+
+def build_delivery_plan(db: Session, severity: str = "critical", target: str | None = None) -> dict:
+    delivery_status = get_notification_delivery_status()
+    notifications = get_notifications(limit=100, db=db)
+    severity_order = {"info": 0, "warning": 1, "critical": 2}
+    threshold = severity_order.get(str(severity or "critical").lower(), 2)
+    filtered = [
+        row for row in notifications
+        if severity_order.get(str(row.get("severity", "info")).lower(), 0) >= threshold
+        and (not target or target.lower() in str(row.get("target", "")).lower())
+    ]
+    channels = []
+    for channel in delivery_status.get("channels", []):
+        name = channel["channel"]
+        connected = bool(channel.get("connected"))
+        if name in {"outbox", "webhook"}:
+            best_for = "All critical notification payloads and audit-safe local demos"
+        elif name in {"email", "slack", "discord"}:
+            best_for = "Operations room, managers, and daily incident summaries"
+        elif name in {"telegram", "whatsapp", "sms"}:
+            best_for = "Mobile emergency escalation for P1 vessel/cargo incidents"
+        else:
+            best_for = "General notification delivery"
+        channels.append({
+            **channel,
+            "recommended_for": best_for,
+            "ready_label": "Connected" if connected else "Needs environment variables",
+        })
+    sample = {
+        "title": "P1 Maritime Alert",
+        "target": filtered[0].get("target") if filtered else "Global network",
+        "message": filtered[0].get("message") if filtered else "Fuel tanker entering high-risk corridor. Reroute recommended.",
+        "severity": filtered[0].get("severity") if filtered else severity,
+        "action": "Open Command Center > AI Captain and queue captain order.",
+    }
+    return {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "severity_threshold": severity,
+        "target": target or "all",
+        "notification_count": len(filtered),
+        "channels": channels,
+        "recommended_sequence": [
+            "outbox",
+            "webhook" if any(row["channel"] == "webhook" and row["connected"] for row in channels) else "email",
+            "whatsapp" if any(row["channel"] == "whatsapp" and row["connected"] for row in channels) else "telegram",
+            "sms",
+        ],
+        "sample_payload": sample,
+        "rules": [
+            "P1 incidents should go to at least one team channel and one mobile channel.",
+            "Public users must never receive sensitive cargo/security payloads.",
+            "Every delivery should write an outbox/audit record first.",
+        ],
+    }
+
+
+@app.get("/notifications/delivery-plan")
+def get_delivery_plan(
+    severity: str = "critical",
+    target: str | None = None,
+    db: Session = Depends(get_db),
+):
+    return build_delivery_plan(db, severity=severity, target=target)
+
+
+def build_production_upgrade_hub(db: Session) -> dict:
+    external = get_external_data_status()
+    delivery = get_notification_delivery_status()
+    auth = get_auth_provider_status()
+    hardening = get_deployment_hardening(db)
+    readiness = get_deployment_readiness(db)
+    reliability = get_system_reliability(db)
+    quality = get_data_quality(db)
+    ais = get_ais_reliability(db)
+    delivery_plan = build_delivery_plan(db)
+    score = round(
+        (provider_score(external, delivery, auth) * 0.28)
+        + (float(hardening.get("score", 0) or 0) * 0.22)
+        + (float(readiness.get("score", 0) or 0) * 0.18)
+        + (float(reliability.get("score", 0) or 0) * 0.18)
+        + (float(quality.get("score", 0) or 0) * 0.14),
+        1,
+    )
+    modules = [
+        {
+            "module": "Real production authentication",
+            "status": "connected" if auth.get("connected_providers") else "ready for provider keys",
+            "next_step": "Connect OIDC/OAuth and WebAuthn behind HTTPS.",
+            "env": "GOOGLE_CLIENT_ID, OIDC_CLIENT_ID, WEBAUTHN_RP_ID",
+        },
+        {
+            "module": "Real-time risk APIs",
+            "status": external.get("mode"),
+            "next_step": "Add weather, port, security, fuel, geopolitical, and container provider keys.",
+            "env": "WEATHER_API_KEY, PORT_CONGESTION_API_KEY, MARITIME_SECURITY_API_KEY, FUEL_PRICE_API_KEY",
+        },
+        {
+            "module": "Advanced AI model",
+            "status": "feature-ready",
+            "next_step": "Feed historical AIS/weather/incident datasets into the existing ML risk pipeline.",
+            "env": "ML_TRAINING_DATASET_PATH",
+        },
+        {
+            "module": "True sea-lane route engine",
+            "status": "avoid-zone engine active",
+            "next_step": "Connect nautical routing provider for exact sea lanes and restricted waters.",
+            "env": "SEA_LANE_PROVIDER_API_KEY",
+        },
+        {
+            "module": "Live alert delivery",
+            "status": f"{len(delivery.get('connected_channels', []))} channel(s) connected",
+            "next_step": "Connect WhatsApp/SMS/email/team-room channels for P1 escalation.",
+            "env": "WHATSAPP_ACCESS_TOKEN, SMS_PROVIDER_API_KEY, EMAIL_SMTP_HOST",
+        },
+        {
+            "module": "3D maritime map",
+            "status": "animated command maps active",
+            "next_step": "Add weather tiles and provider-driven heatmap layers.",
+            "env": "MAP_TILE_PROVIDER_KEY",
+        },
+        {
+            "module": "Mobile app",
+            "status": "mobile command mode ready",
+            "next_step": "Wrap the API with a native/PWA shell and push notifications.",
+            "env": "PUSH_PROVIDER_KEY",
+        },
+        {
+            "module": "Company operations",
+            "status": "role workflow scaffold active",
+            "next_step": "Add organization/team membership tables and incident comments.",
+            "env": "ORG_WORKSPACE_NAME",
+        },
+        {
+            "module": "Cargo tracking",
+            "status": "manifest and custody scaffold active",
+            "next_step": "Connect container tracking provider and verified bill-of-lading source.",
+            "env": "CONTAINER_TRACKING_API_KEY",
+        },
+        {
+            "module": "Deployment upgrade",
+            "status": readiness.get("band", "unknown"),
+            "next_step": "Deploy Docker + PostgreSQL + HTTPS + secret storage + backups.",
+            "env": "DATABASE_URL, PUBLIC_BASE_URL, APP_MODE",
+        },
+    ]
+    return {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "score": score,
+        "status": upgrade_status(score),
+        "summary": "Production upgrade hub for auth, APIs, AI, routing, alerts, mobile, teams, cargo, and deployment.",
+        "modules": modules,
+        "external_data": external,
+        "delivery_plan": delivery_plan,
+        "hardening": hardening,
+        "readiness": readiness,
+        "reliability": reliability,
+        "data_quality": quality,
+        "ais": ais,
+        "next_best_steps": [
+            "Connect HTTPS and real auth provider first, because WebAuthn/OAuth require trusted origins.",
+            "Move from SQLite to PostgreSQL before multi-user company operations.",
+            "Connect weather/security/port APIs before claiming production-grade risk prediction.",
+            "Connect WhatsApp/SMS/email only after role-based cargo redaction is reviewed.",
+        ],
+    }
+
+
+@app.get("/production/upgrade-hub")
+def get_production_upgrade_hub(db: Session = Depends(get_db)):
+    return build_production_upgrade_hub(db)
 
 
 @app.get("/setup/checklist")
@@ -2929,16 +3158,32 @@ def get_setup_checklist(db: Session = Depends(get_db)):
 @app.get("/weather/maritime")
 def get_maritime_weather(db: Session = Depends(get_db)):
     alerts = db.query(ThreatAlert).order_by(ThreatAlert.id.desc()).limit(50).all()
+    weather_api_key = os.getenv("WEATHER_API_KEY")
     rows = []
     for port, coords in PORT_COORDS.items():
-        alert_pressure = sum(
-            1 for alert in alerts
-            if port.lower() in f"{alert.title} {alert.description} {alert.location}".lower()
-            or any(token in f"{alert.title} {alert.description}".lower() for token in ["weather", "storm", "cyclone"])
-        )
-        wind = 12 + ((len(port) * 7) % 22) + (alert_pressure * 4)
-        wave = round(1.2 + ((len(port) % 5) * 0.55) + (alert_pressure * 0.7), 1)
-        score = clamp_percent((wind * 1.4) + (wave * 8) + (alert_pressure * 12))
+        if weather_api_key:
+            try:
+                # Call OpenWeatherMap
+                resp = requests.get(f"https://api.openweathermap.org/data/2.5/weather?lat={coords[0]}&lon={coords[1]}&appid={weather_api_key}&units=metric", timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                wind = data.get("wind", {}).get("speed", 0) * 1.94384  # Convert m/s to knots
+                wave = round((wind * 0.15) + 0.5, 1)  # Simulate wave height based on wind speed
+                alert_pressure = 1 if data.get("weather", [{}])[0].get("main") in ["Thunderstorm", "Extreme"] else 0
+                score = clamp_percent((wind * 1.4) + (wave * 8) + (alert_pressure * 20))
+            except Exception:
+                weather_api_key = None  # Safe fallback if API request fails
+        
+        if not weather_api_key:
+            alert_pressure = sum(
+                1 for alert in alerts
+                if port.lower() in f"{alert.title} {alert.description} {alert.location}".lower()
+                or any(token in f"{alert.title} {alert.description}".lower() for token in ["weather", "storm", "cyclone"])
+            )
+            wind = 12 + ((len(port) * 7) % 22) + (alert_pressure * 4)
+            wave = round(1.2 + ((len(port) % 5) * 0.55) + (alert_pressure * 0.7), 1)
+            score = clamp_percent((wind * 1.4) + (wave * 8) + (alert_pressure * 12))
+
         rows.append({
             "port": port,
             "lat": coords[0],
@@ -2951,8 +3196,8 @@ def get_maritime_weather(db: Session = Depends(get_db)):
         })
     return {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "source": "External weather provider hook" if os.getenv("WEATHER_API_KEY") else "Simulated fallback from alerts and port profile",
-        "provider_connected": bool(os.getenv("WEATHER_API_KEY")),
+        "source": "OpenWeatherMap API" if weather_api_key else "Simulated fallback from alerts and port profile",
+        "provider_connected": bool(weather_api_key),
         "ports": sorted(rows, key=lambda row: row["weather_score"], reverse=True),
     }
 
@@ -7044,6 +7289,104 @@ def plan_global_route(origin: str, destination: str) -> dict:
 @app.get("/copilot/global-route")
 def get_global_route_plan(origin: str, destination: str):
     return plan_global_route(origin, destination)
+
+
+def sea_lane_objective_score(option: dict, objective: str, cargo_priority: str, avoid_tokens: list[str]) -> float:
+    objective = str(objective or "safest").lower()
+    cargo_priority = str(cargo_priority or "P2").upper()
+    risk = float(option.get("risk_score", 0) or 0)
+    distance = float(option.get("distance_nm", 0) or 0)
+    detour = float(option.get("detour_ratio", 1) or 1)
+    exposures = option.get("zone_exposures", []) or []
+    avoid_hits = [
+        exposure for exposure in exposures
+        if any(
+            token
+            and (
+                token in str(exposure.get("zone", "")).lower()
+                or token in str(exposure.get("type", "")).lower()
+                or token in str(exposure.get("note", "")).lower()
+            )
+            for token in avoid_tokens
+        )
+    ]
+    avoid_penalty = sum(float(row.get("impact", 0) or 0) for row in avoid_hits) * 1.35
+    cargo_penalty = {"P1": risk * 0.9, "P2": risk * 0.45, "P3": risk * 0.15}.get(cargo_priority, risk * 0.35)
+    if objective == "fastest":
+        objective_score = (distance / 1000) + (risk * 0.28) + avoid_penalty
+    elif objective in {"lowest_cost", "cheapest"}:
+        objective_score = (distance / 1200) + (detour * 1.2) + (risk * 0.35) + (avoid_penalty * 0.8)
+    elif objective == "balanced":
+        objective_score = (risk * 0.62) + (distance / 1600) + (detour * 0.8) + (avoid_penalty * 1.05) + (cargo_penalty * 0.28)
+    else:
+        objective_score = (risk * 0.9) + avoid_penalty + cargo_penalty + (detour * 0.4)
+    option["avoid_zone_hits"] = avoid_hits
+    option["avoid_penalty"] = round(avoid_penalty, 2)
+    option["cargo_priority"] = cargo_priority
+    option["objective_score"] = round(objective_score, 2)
+    option["captain_rule"] = (
+        "Reject unless Admin accepts risk" if avoid_penalty >= 8 and cargo_priority == "P1" else
+        "Reroute strongly recommended" if avoid_penalty >= 4 else
+        "Acceptable with watch controls" if risk < 6 else
+        "Operator review required"
+    )
+    option["route_controls"] = [
+        "Run AI Captain final verdict before dispatch.",
+        "Keep live AIS trail and stale-signal monitoring enabled.",
+        "Escalate to Admin if cargo is P1 and the route touches an avoid-zone.",
+    ]
+    if avoid_hits:
+        option["route_controls"].append("Notify operations room and prepare an alternate corridor before entering the watch zone.")
+    if risk >= 7:
+        option["route_controls"].append("Delay departure or request manual security review if no lower-risk option is available.")
+    return option["objective_score"]
+
+
+@app.get("/routes/sea-lane-engine")
+def get_sea_lane_engine(
+    origin: str,
+    destination: str,
+    objective: str = "safest",
+    cargo_priority: str = "P2",
+    avoid: str = "war,piracy,security,geopolitical",
+):
+    plan = plan_global_route(origin, destination)
+    avoid_tokens = [
+        token.strip().lower()
+        for token in str(avoid or "").split(",")
+        if token.strip()
+    ]
+    options = []
+    for option in plan.get("alternatives", []):
+        enriched = dict(option)
+        sea_lane_objective_score(enriched, objective, cargo_priority, avoid_tokens)
+        options.append(enriched)
+    options = sorted(options, key=lambda row: (row["objective_score"], row["risk_score"], row["distance_nm"]))
+    for row in options:
+        row["recommended"] = False
+    if options:
+        options[0]["recommended"] = True
+    return {
+        "origin": plan.get("origin"),
+        "destination": plan.get("destination"),
+        "objective": objective,
+        "cargo_priority": cargo_priority.upper(),
+        "avoid_tokens": avoid_tokens,
+        "recommended": options[0] if options else None,
+        "options": options,
+        "controls": [
+            "Use safest objective for P1/high-value cargo unless Admin approves a faster route.",
+            "Treat war, piracy, hijack, sanctions, and storm exposure as avoid-zone penalties.",
+            "Connect weather/security/port providers before using this for production dispatch.",
+            "Record every accepted high-risk route as an audited command decision.",
+        ],
+        "decision_note": (
+            "Sea-lane engine uses candidate maritime corridors, global watch zones, cargo priority, "
+            "and avoid-zone penalties. Connect SEA_LANE_PROVIDER_API_KEY for production-grade nautical geometry."
+        ),
+        "provider_connected": bool(os.getenv("SEA_LANE_PROVIDER_API_KEY")),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
 
 
 def global_route_answer(question: str) -> dict | None:

@@ -28,12 +28,24 @@ PORT_COORDS = {
     "Dubai": (25.2048, 55.2708),
 }
 
+MARITIME_WATCH_ZONES = [
+    {"name": "Gulf of Aden", "lat": 12.0, "lon": 45.0, "score": 8.8, "type": "Piracy / Security"},
+    {"name": "Red Sea Approach", "lat": 21.5, "lon": 37.0, "score": 8.4, "type": "War / Disruption"},
+    {"name": "Strait of Hormuz", "lat": 26.6, "lon": 56.2, "score": 8.1, "type": "Geopolitical"},
+    {"name": "Gulf of Guinea", "lat": 2.5, "lon": 5.5, "score": 7.6, "type": "Cargo / Hijack"},
+    {"name": "Black Sea", "lat": 44.5, "lon": 34.5, "score": 8.2, "type": "War / Geopolitical"},
+]
+
 
 def _configure_page():
     st.set_page_config(page_title="Global AI Trade Intelligence Platform", layout="wide", page_icon="ship")
 
 
 def api_cache_ttl(path):
+    if path.startswith(("/health", "/notifications")):
+        return 18 if bool(st.session_state.get("mobile_performance_mode", False)) else 12
+    if path.startswith(("/weather/maritime", "/ports/congestion")):
+        return 90 if bool(st.session_state.get("mobile_performance_mode", False)) else 45
     live_paths = (
         "/ai/live",
         "/ai/risk-intelligence",
@@ -44,8 +56,6 @@ def api_cache_ttl(path):
         "/ai/incident-predictions",
         "/operations/inbox",
         "/vessels/live",
-        "/notifications",
-        "/health",
     )
     static_paths = (
         "/auth/roles",
@@ -53,6 +63,9 @@ def api_cache_ttl(path):
         "/ais/reliability",
         "/settings/runtime",
         "/settings/production-mode",
+        "/production/upgrade-hub",
+        "/notifications/delivery-plan",
+        "/routes/sea-lane-engine",
         "/deployment/hardening",
         "/deployment/readiness",
         "/data-quality",
@@ -61,13 +74,13 @@ def api_cache_ttl(path):
     )
     if path.startswith(live_paths):
         if bool(st.session_state.get("mobile_performance_mode", False)):
-            return max(5, int(st.session_state.get("ui_refresh_seconds", 5)))
-        return max(3, int(st.session_state.get("ui_refresh_seconds", 5)))
+            return max(10, int(st.session_state.get("ui_refresh_seconds", 8)))
+        return max(6, int(st.session_state.get("ui_refresh_seconds", 6)))
     if path.startswith(static_paths):
-        return 30
+        return 60
     if any(token in path for token in ["history", "timeline", "reports", "forecast", "predictions"]):
-        return 8
-    return 4
+        return 20 if bool(st.session_state.get("mobile_performance_mode", False)) else 12
+    return 8
 
 
 @st.cache_data(show_spinner=False, max_entries=256)
@@ -522,10 +535,38 @@ def render_incident_card(card, key_prefix="incident"):
 def admin_step_up_ready(key, label="critical action"):
     if current_role() != "Admin":
         return True
-    st.caption(f"Admin step-up required for {label}: confirm fingerprint and type `APPROVE`.")
+    st.caption(f"Admin step-up required for {label}: confirm passkey and type `APPROVE`.")
+    
+    components.html(
+        """
+        <button onclick="triggerWebAuthn()" style="background: rgba(20, 184, 166, 0.12); border: 1px solid rgba(20, 184, 166, 0.4); color: #99f6e4; padding: 8px 16px; border-radius: 6px; cursor: pointer; width: 100%; font-family: sans-serif; font-weight: bold; transition: all 0.2s;">
+            Scan WebAuthn Passkey
+        </button>
+        <script>
+            async function triggerWebAuthn() {
+                const btn = document.querySelector('button');
+                btn.innerText = "Scanning...";
+                try {
+                    const challenge = new Uint8Array(32);
+                    window.crypto.getRandomValues(challenge);
+                    await navigator.credentials.get({
+                        publicKey: { challenge: challenge, userVerification: "discouraged", timeout: 60000 }
+                    });
+                    btn.innerText = "Passkey Verified";
+                    btn.style.background = "rgba(16, 185, 129, 0.3)";
+                } catch (err) {
+                    btn.innerText = "Scan WebAuthn Passkey";
+                    alert("Passkey prompt cancelled or unavailable. Use fallback checkbox.");
+                }
+            }
+        </script>
+        """,
+        height=45,
+    )
+
     c1, c2 = st.columns([0.7, 1])
     with c1:
-        scan_ok = st.checkbox("Fingerprint reconfirmed", key=f"{key}_fingerprint")
+        scan_ok = st.checkbox("Passkey confirmed", key=f"{key}_fingerprint")
     with c2:
         phrase = st.text_input("Approval phrase", type="password", key=f"{key}_phrase", placeholder="APPROVE")
     return bool(scan_ok and phrase.strip().upper() == "APPROVE")
@@ -545,6 +586,15 @@ def run_command_action(action, target, owner, note="", priority="P2", source="Ex
     ).json()
 
 
+@st.dialog("Notifications", width="large")
+def dialog_notifications():
+    show_notifications()
+
+@st.dialog("Settings", width="large")
+def dialog_settings():
+    show_settings()
+
+
 def render_top_utility_bar(notifications=None, health=None):
     notifications = notifications or []
     health = health or {}
@@ -552,36 +602,110 @@ def render_top_utility_bar(notifications=None, health=None):
     api_status = health.get("status", "offline").title() if isinstance(health, dict) else "Offline"
     active_utility = st.session_state.get("utility_page")
 
-    st.markdown('<div class="app-topbar-anchor"></div>', unsafe_allow_html=True)
-    left, spacer, notify_col, settings_col, close_col = st.columns([4.4, 1.25, 1.05, 1.05, 0.7])
+    st.markdown(
+        """
+<style>
+.app-topbar-anchor {
+    margin-top: -2rem;
+}
+.topbar-glass {
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    border-radius: 12px;
+    padding: 0.6rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3), inset 0 0 15px rgba(56, 189, 248, 0.1);
+    margin-bottom: 1rem;
+}
+.topbar-branding {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+.topbar-pill-status {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+}
+.topbar-pill-offline {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+}
+.topbar-title {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: #e0f2fe;
+    letter-spacing: 0.05em;
+    text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+.topbar-meta {
+    color: #94a3b8;
+    font-size: 0.85rem;
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+.meta-divider {
+    color: rgba(148, 163, 184, 0.3);
+}
+</style>
+<div class="app-topbar-anchor"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    left, spacer, notify_col, settings_col, close_col = st.columns([5, 0.5, 1.2, 1.2, 0.7])
+    
     with left:
+        status_class = "topbar-pill-status" if api_status.lower() == "online" else "topbar-pill-offline"
         st.markdown(
             f"""
-            <div class="topbar-card">
-                <span class="topbar-pill">{safe_html(api_status)}</span>
-                <b>Maritime Command OS</b>
-                <span> | {safe_html(current_role())} | {safe_html(auth_status_label())} | Mobile-ready demo shell</span>
-            </div>
+<div class="topbar-glass">
+<div class="topbar-branding">
+<span class="{status_class}">{safe_html(api_status)}</span>
+<span class="topbar-title">MARITIME COMMAND OS</span>
+<div class="topbar-meta">
+<span class="meta-divider">|</span>
+<span style="color: #38bdf8; font-weight: 600;">{safe_html(current_role())}</span>
+<span class="meta-divider">|</span>
+<span>{safe_html(auth_status_label())}</span>
+</div>
+</div>
+</div>
             """,
             unsafe_allow_html=True,
         )
-    with spacer:
-        if critical:
-            st.caption(f"{critical} critical")
-        else:
-            st.caption("All quiet")
+
     with notify_col:
-        notify_label = f"Alerts {len(notifications)}"
-        if st.button(notify_label, key="utility_open_notifications", use_container_width=True, icon=":material/notifications_active:", help="Open notification center"):
-            st.session_state.utility_page = "Notifications"
-            st.rerun()
+        notify_label = f"Alerts ({len(notifications)})"
+        alert_type = "primary" if critical else "secondary"
+        if st.button(notify_label, key="utility_open_notifications", type=alert_type, use_container_width=True, icon=":material/notifications_active:", help="Open notification center"):
+            dialog_notifications()
     with settings_col:
         if st.button("Settings", key="utility_open_settings", use_container_width=True, icon=":material/settings:", help="Open settings"):
-            st.session_state.utility_page = "Settings"
-            st.rerun()
+            dialog_settings()
     with close_col:
         if active_utility and st.button("Close", key="utility_close", use_container_width=True, icon=":material/close:"):
-            st.session_state.utility_page = None
+            close_utility_page()
             st.rerun()
 
 
@@ -807,6 +931,204 @@ def port_visual_data(routes):
                 "color": [255, 255, 255, 220],
                 "halo": [14, 165, 233, 70],
             })
+    return rows
+
+
+def numeric_value(value, default=0.0):
+    try:
+        return float(value if value is not None else default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def score_to_map_color(score, alpha=210):
+    score = numeric_value(score)
+    if score > 10:
+        score = score / 10
+    if score >= 8:
+        return [220, 38, 38, alpha]
+    if score >= 6:
+        return [245, 158, 11, alpha]
+    if score >= 4:
+        return [250, 204, 21, alpha]
+    return [45, 212, 191, alpha]
+
+
+def weather_cell_rows(weather_packet):
+    rows = []
+    for item in (weather_packet or {}).get("ports", []):
+        lat = item.get("lat")
+        lon = item.get("lon")
+        if lat is None or lon is None:
+            coords = PORT_COORDS.get(item.get("port"))
+            if not coords:
+                continue
+            lat, lon = coords
+        score = numeric_value(item.get("weather_score"))
+        color = score_to_map_color(score, 95)
+        rows.append({
+            "name": f"{item.get('port', 'Weather cell')} weather",
+            "detail": "Weather overlay",
+            "lat": lat,
+            "lon": lon,
+            "risk": round(score / 10, 1),
+            "status": item.get("band", "Weather watch"),
+            "source": (weather_packet or {}).get("source", "Weather model"),
+            "wind": f"{item.get('wind_knots', 0)} kn",
+            "wave": f"{item.get('wave_meters', 0)} m",
+            "control": item.get("recommended_control", "Normal watch"),
+            "radius": 260000 + (score * 6200),
+            "elevation": 650 + (score * 92),
+            "color": color,
+            "line": color[:3] + [175],
+            "label": f"WX {score:.0f}",
+        })
+    return rows
+
+
+def congestion_zone_rows(congestion_packet, fallback_ports=None):
+    rows = []
+    source_rows = (congestion_packet or {}).get("ports", []) or fallback_ports or []
+    for item in source_rows:
+        name = item.get("port") or item.get("name")
+        coords = PORT_COORDS.get(name, (item.get("lat"), item.get("lon")))
+        if coords[0] is None or coords[1] is None:
+            continue
+        score = numeric_value(item.get("congestion_score", item.get("berth_load", item.get("risk", 0))))
+        color = score_to_map_color(score, 150)
+        rows.append({
+            "name": f"{name} congestion",
+            "detail": "Port congestion zone",
+            "lat": coords[0],
+            "lon": coords[1],
+            "risk": round(score / 10, 1),
+            "status": item.get("band", item.get("status", "Port flow")),
+            "source": (congestion_packet or {}).get("source", "Port analytics"),
+            "vessels": item.get("vessels", 0),
+            "control": item.get("recommended_staging", "Normal flow"),
+            "radius": 190000 + (score * 4300),
+            "elevation": 900 + (score * 130),
+            "color": color,
+            "line": color[:3] + [210],
+            "label": f"{name}\n{score:.0f}% flow",
+        })
+    return rows
+
+
+def route_comparison_rows(routes, assessment_by_route=None):
+    rows = []
+    assessment_by_route = assessment_by_route or {}
+    for index, route in enumerate(routes or []):
+        origin = PORT_COORDS.get(route.get("origin_port"))
+        destination = PORT_COORDS.get(route.get("destination_port"))
+        if not origin or not destination:
+            continue
+        route_name = f"{route.get('origin_port')} to {route.get('destination_port')}"
+        assessment = assessment_by_route.get(route_name, {})
+        risk = numeric_value(assessment.get("risk_score", assessment.get("score", route.get("risk_level", 0))))
+        offset = ((index % 3) - 1) * 0.8
+        color = score_to_map_color(risk, 180)
+        mode = "Safest lane" if risk < 5 else "Watch lane" if risk < 7 else "Avoid if possible"
+        rows.append({
+            "name": route_name,
+            "detail": "Route comparison layer",
+            "route": route_name,
+            "path": [[origin[1] + offset, origin[0]], [destination[1] + offset, destination[0]]],
+            "mid_lat": (origin[0] + destination[0]) / 2,
+            "mid_lon": ((origin[1] + destination[1]) / 2) + offset,
+            "risk": round(risk, 2),
+            "status": mode,
+            "source": "Route comparison model",
+            "color": color,
+            "glow": color[:3] + [38],
+            "width": 2.5 + risk,
+            "label": f"{mode}: {risk:.1f}",
+        })
+    return sorted(rows, key=lambda row: row["risk"])
+
+
+def threat_heat_rows(overview=None, routes=None, vessels=None, assessment_by_route=None):
+    rows = []
+    for zone in MARITIME_WATCH_ZONES:
+        score = numeric_value(zone.get("score"))
+        rows.append({
+            "name": zone["name"],
+            "detail": zone["type"],
+            "lat": zone["lat"],
+            "lon": zone["lon"],
+            "risk": score,
+            "status": "Global watch zone",
+            "source": "Global maritime risk model",
+            "weight": round(score * 12, 1),
+            "radius": 430000 + (score * 78000),
+            "color": score_to_map_color(score, 62),
+            "line": score_to_map_color(score, 165),
+            "label": f"{zone['name']}\n{score:.1f}",
+        })
+    assessment_by_route = assessment_by_route or {}
+    for route in routes or []:
+        origin = PORT_COORDS.get(route.get("origin_port"))
+        destination = PORT_COORDS.get(route.get("destination_port"))
+        if not origin or not destination:
+            continue
+        route_name = f"{route.get('origin_port')} to {route.get('destination_port')}"
+        assessment = assessment_by_route.get(route_name, {})
+        risk = numeric_value(assessment.get("risk_score", assessment.get("score", route.get("risk_level", 0))))
+        if risk < 4:
+            continue
+        rows.append({
+            "name": f"{route_name} heat",
+            "detail": "Route pressure",
+            "lat": (origin[0] + destination[0]) / 2,
+            "lon": (origin[1] + destination[1]) / 2,
+            "risk": round(risk, 2),
+            "status": risk_label(risk),
+            "source": "Route risk model",
+            "weight": round(risk * 10, 1),
+            "radius": 280000 + (risk * 52000),
+            "color": score_to_map_color(risk, 50),
+            "line": score_to_map_color(risk, 135),
+            "label": f"Risk {risk:.1f}",
+        })
+    for vessel in vessels or []:
+        risk = numeric_value(vessel.get("risk", vessel_priority_score(vessel) / 10))
+        if risk < 4:
+            continue
+        rows.append({
+            "name": f"{vessel.get('name', 'Vessel')} heat",
+            "detail": "Vessel pressure",
+            "lat": vessel.get("lat", vessel_map_lat(vessel)),
+            "lon": vessel.get("lon", vessel_map_lon(vessel)),
+            "risk": round(risk, 2),
+            "status": vessel.get("status", "Vessel watch"),
+            "source": "AIS/cargo risk",
+            "weight": round(risk * 8, 1),
+            "radius": 180000 + (risk * 42000),
+            "color": score_to_map_color(risk, 42),
+            "line": score_to_map_color(risk, 120),
+            "label": f"{risk:.1f}",
+        })
+    return rows
+
+
+def course_vector_rows(ship_rows):
+    rows = []
+    for row in ship_rows or []:
+        lat = numeric_value(row.get("lat"))
+        lon = numeric_value(row.get("lon"))
+        heading = numeric_value(row.get("angle", 90))
+        angle = math.radians(heading)
+        strength = max(1.4, min(4.8, numeric_value(row.get("risk", 3)) * 0.38 + 1.6))
+        rows.append({
+            "name": f"{row.get('name', 'Ship')} projected track",
+            "detail": "Projected course vector",
+            "path": [[lon, lat], [lon + (math.sin(angle) * strength), lat + (math.cos(angle) * strength * 0.45)]],
+            "risk": row.get("risk", ""),
+            "status": row.get("status", ""),
+            "source": row.get("source", "Course projection"),
+            "color": row.get("color", [34, 211, 238, 210])[:3] + [150],
+            "width": 3,
+        })
     return rows
 
 
@@ -1716,6 +2038,17 @@ def _apply_global_styles():
             border: 1px solid rgba(148, 163, 184, 0.12);
             box-shadow: 0 18px 45px rgba(2, 6, 23, 0.16);
         }
+        [data-testid="stExpander"] {
+            border: 1px solid rgba(125, 211, 252, 0.14);
+            border-radius: 16px;
+            background: rgba(15, 23, 42, 0.38);
+            box-shadow: 0 12px 34px rgba(2, 6, 23, 0.12);
+        }
+        iframe {
+            border-radius: 20px;
+            border: 1px solid rgba(125, 211, 252, 0.12);
+            box-shadow: 0 18px 55px rgba(2, 6, 23, 0.24);
+        }
         div[data-testid="stHorizontalBlock"] {
             gap: 0.65rem;
         }
@@ -1859,14 +2192,17 @@ def _apply_global_styles():
         }
         .main-header {
             font-size: 2.5em;
-            color: #1f77b4;
+            color: #e0f2fe;
             text-align: center;
             margin-bottom: 20px;
         }
         .metric-card {
-            background-color: #f0f2f6;
+            background:
+                radial-gradient(circle at top right, rgba(34, 211, 238, 0.12), transparent 12rem),
+                rgba(15, 23, 42, 0.66);
+            border: 1px solid rgba(125, 211, 252, 0.18);
             padding: 10px;
-            border-radius: 10px;
+            border-radius: 16px;
             text-align: center;
         }
         .security-card {
@@ -2192,69 +2528,124 @@ def _apply_global_styles():
         }
         .login-shell {
             max-width: 1120px;
-            margin: 3vh auto 0 auto;
-            padding: 1rem 0;
+            margin: 4vh auto 0 auto;
+            padding: 2rem 0;
+            position: relative;
+        }
+        .login-shell::before {
+            content: "";
+            position: absolute;
+            top: -20%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60%;
+            height: 140%;
+            background: radial-gradient(ellipse at top, rgba(34, 211, 238, 0.15), transparent 70%);
+            z-index: -1;
+            pointer-events: none;
         }
         .login-title {
-            font-size: clamp(2rem, 4vw, 3.5rem);
-            font-weight: 800;
-            line-height: 1.02;
-            margin-bottom: 0.6rem;
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 900;
+            line-height: 1.1;
+            margin-bottom: 0.8rem;
+            background: linear-gradient(to right, #e0f2fe, #38bdf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 4px 24px rgba(56, 189, 248, 0.25);
         }
         .login-subtitle {
-            color: rgba(226, 232, 240, 0.78);
-            max-width: 720px;
-            margin-bottom: 1rem;
+            color: rgba(226, 232, 240, 0.85);
+            max-width: 760px;
+            margin-bottom: 1.5rem;
+            font-size: 1.1rem;
+            line-height: 1.6;
         }
         .login-badge {
             display: inline-flex;
             border-radius: 999px;
-            padding: 0.25rem 0.65rem;
-            border: 1px solid rgba(125, 211, 252, 0.24);
-            background: rgba(14, 165, 233, 0.12);
+            padding: 0.35rem 0.85rem;
+            border: 1px solid rgba(125, 211, 252, 0.3);
+            background: rgba(14, 165, 233, 0.15);
             color: #bae6fd;
-            font-size: 0.78rem;
-            font-weight: 750;
-            margin-bottom: 0.75rem;
+            font-size: 0.85rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            box-shadow: 0 0 15px rgba(14, 165, 233, 0.2);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .login-panel {
-            border-radius: 22px;
-            border: 1px solid rgba(125, 211, 252, 0.22);
+            border-radius: 24px;
+            border: 1px solid rgba(125, 211, 252, 0.3);
             background:
-                radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 18rem),
-                linear-gradient(135deg, rgba(15, 23, 42, 0.84), rgba(8, 47, 73, 0.58));
-            padding: 1rem;
-            box-shadow: 0 22px 60px rgba(2, 6, 23, 0.28);
+                radial-gradient(circle at top left, rgba(34, 211, 238, 0.25), transparent 22rem),
+                linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(8, 47, 73, 0.7));
+            padding: 1.5rem;
+            box-shadow: 0 28px 65px rgba(2, 6, 23, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+        .login-panel::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.03), transparent);
+            transform: translateX(-100%);
+            animation: shimmer 3s infinite;
+        }
+        @keyframes shimmer {
+            100% { transform: translateX(100%); }
         }
         .login-panel h3 {
-            margin: 0.15rem 0 0.35rem 0;
+            margin: 0.15rem 0 0.5rem 0;
+            color: #f8fafc;
+            font-size: 1.4rem;
         }
         .login-panel p {
-            color: rgba(226, 232, 240, 0.74);
-            margin: 0.2rem 0 0.7rem 0;
+            color: rgba(226, 232, 240, 0.8);
+            margin: 0.2rem 0 0.9rem 0;
+            font-size: 1.05rem;
+            line-height: 1.5;
         }
         .login-kpi {
-            border-radius: 16px;
-            border: 1px solid rgba(148, 163, 184, 0.16);
-            background: rgba(15, 23, 42, 0.5);
-            padding: 0.72rem;
-            min-height: 5.8rem;
+            border-radius: 18px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            background: rgba(15, 23, 42, 0.6);
+            padding: 1rem;
+            min-height: 6.5rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+        .login-kpi:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(34, 211, 238, 0.15);
+            border-color: rgba(125, 211, 252, 0.4);
         }
         .login-kpi b {
             color: #f8fafc;
+            font-size: 1.1rem;
+            display: block;
+            margin-bottom: 0.3rem;
         }
         .login-kpi span {
             display: block;
-            color: rgba(226, 232, 240, 0.68);
-            font-size: 0.84rem;
+            color: rgba(226, 232, 240, 0.75);
+            font-size: 0.9rem;
             margin-top: 0.25rem;
+            line-height: 1.4;
         }
         .login-choice {
-            border-radius: 8px;
-            border: 1px solid rgba(148, 163, 184, 0.22);
-            background: rgba(15, 23, 42, 0.55);
-            padding: 0.9rem;
-            min-height: 8rem;
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            background: rgba(15, 23, 42, 0.65);
+            padding: 1.2rem;
+            min-height: 8.5rem;
+            transition: all 0.2s;
+        }
+        .login-choice:hover {
+            border-color: rgba(125, 211, 252, 0.4);
+            background: rgba(15, 23, 42, 0.8);
         }
         .login-choice b {
             color: #f8fafc;
@@ -2272,7 +2663,7 @@ def _apply_global_styles():
             padding-top: 1rem;
         }
         .sidebar .sidebar-content {
-            background-color: #f8f9fa;
+            background-color: transparent;
         }
         @media (max-width: 760px) {
             .block-container {
@@ -2446,11 +2837,13 @@ def prepare_fleet_map_data(vessels):
     return map_data
 
 
-def fleet_operations_deck(vessels, routes=None, selected_name=None):
+def fleet_operations_deck(vessels, routes=None, selected_name=None, weather=None, congestion=None):
     route_rows = route_visual_data(routes or [])
     vessel_rows = []
     selected_rows = []
     berth_arcs = []
+    wake_rows = []
+    wave_phase = datetime.datetime.now().timestamp() % 6
 
     for index, vessel in enumerate(vessels or []):
         status = str(vessel.get("status", "active")).lower()
@@ -2465,6 +2858,12 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
         speed = vessel_speed(vessel)
         cargo = vessel.get("cargo", "Unknown")
         cargo_class = vessel.get("cargo_class", "Unknown")
+        cargo_value = vessel.get("cargo_value", vessel.get("value", "Unknown"))
+        cargo_source = vessel.get("cargo_source", "Unknown")
+        destination = vessel.get("destination_port") or vessel.get("ais_destination") or vessel.get("destination") or "Unknown"
+        mmsi = vessel.get("mmsi") or vessel.get("id") or "Unknown"
+        heading = float(vessel.get("heading", 0) or 0)
+        eta = _format_eta_hours(vessel.get("eta_hours")) if vessel.get("eta_hours") is not None else "Calculating"
         slot = f"F{index + 1:02d}"
         if priority >= 55 or status in {"damaged", "destroyed"}:
             color = [248, 113, 113, 235]
@@ -2497,26 +2896,47 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             "route": route_name,
             "cargo": cargo,
             "cargo_class": cargo_class,
+            "cargo_value": cargo_value,
+            "cargo_source": cargo_source,
+            "verified_manifest": "Yes" if vessel.get("cargo_verified") else "No",
+            "mmsi": mmsi,
+            "destination": destination,
             "command": command,
             "speed": f"{speed:.1f} kn",
+            "heading": f"{heading:.0f} deg",
+            "eta": eta,
             "nearest_port": nearest_port,
             "priority": priority,
             "signal": f"{signal_age:.0f}s" if signal_age is not None else "Unknown",
             "api_position": f"{vessel_api_lat(vessel):.4f}, {vessel_api_lon(vessel):.4f}",
+            "display_position": f"{lat:.4f}, {lon:.4f}",
             "motion_source": vessel.get("motion_source", "map projection"),
             "motion_nm": vessel.get("motion_projected_nm", 0),
+            "angle": heading,
+            "risk": round(max(priority / 10, float(vessel.get("risk_score", 0) or 0)), 2),
             "color": color,
             "slot_color": slot_color,
             "radius": radius,
             "ring_color": color[:3] + [55],
             "ring_radius": radius * (2.35 if is_selected else 1.65),
+            "pulse_color": color[:3] + [30],
+            "pulse_radius": radius * (2.15 + ((wave_phase + index) % 3) * 0.28),
             "selection_color": [250, 204, 21, 58],
             "selection_line": [250, 204, 21, 240],
             "selection_radius": 430000,
+            "heading_label": f"{heading:.0f} deg",
+            "ai_recommendation": vessel.get("recommended_action", "Open ship intelligence card"),
         }
         vessel_rows.append(row)
         if is_selected:
             selected_rows.append(row)
+        if status not in {"destroyed", "maintenance"}:
+            wake_rows.append({
+                "name": row["name"],
+                "path": vessel_motion_trail(vessel, index, routes or []),
+                "color": color[:3] + [120],
+                "width": 7 if speed > 5 else 4,
+            })
         port_coords = PORT_COORDS.get(nearest_port)
         if port_coords:
             berth_arcs.append({
@@ -2559,7 +2979,97 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             "label": f"{port_name}\n{berth_load:.0f}% load\n{len(local_vessels)} ships",
         })
 
+    weather_rows = weather_cell_rows(weather)
+    congestion_rows = congestion_zone_rows(congestion, port_rows)
+    comparison_rows = route_comparison_rows(routes or [])
+    heat_rows = threat_heat_rows(routes=routes or [], vessels=vessel_rows)
+    course_rows = course_vector_rows(vessel_rows)
+
     layers = []
+    if heat_rows:
+        layers.append(pdk.Layer(
+            "HeatmapLayer",
+            data=heat_rows,
+            get_position="[lon, lat]",
+            get_weight="weight",
+            radiusPixels=70,
+            intensity=1.25,
+            threshold=0.03,
+            colorRange=[
+                [14, 116, 144, 0],
+                [45, 212, 191, 70],
+                [250, 204, 21, 105],
+                [245, 158, 11, 145],
+                [220, 38, 38, 190],
+            ],
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=heat_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=1,
+            pickable=True,
+        ))
+    if comparison_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=comparison_rows,
+            get_path="path",
+            get_color="glow",
+            get_width=22,
+            width_min_pixels=2,
+            rounded=True,
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=comparison_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
+            pickable=True,
+        ))
+    if weather_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=weather_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=2,
+            pickable=True,
+        ))
+        layers.append(pdk.Layer(
+            "ColumnLayer",
+            data=weather_rows,
+            get_position="[lon, lat]",
+            get_elevation="elevation",
+            elevation_scale=45,
+            radius=80000,
+            get_fill_color="line",
+            pickable=True,
+        ))
+    if congestion_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=congestion_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=2,
+            pickable=True,
+        ))
     if route_rows:
         layers.append(pdk.Layer(
             "PathLayer",
@@ -2580,6 +3090,28 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             get_source_color="source_color",
             get_target_color="target_color",
             get_width="width",
+            pickable=True,
+        ))
+    if course_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=course_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
+            pickable=True,
+        ))
+    if wake_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=wake_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
             pickable=True,
         ))
     if port_rows:
@@ -2620,12 +3152,24 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             "ScatterplotLayer",
             data=vessel_rows,
             get_position="[lon, lat]",
+            get_fill_color="pulse_color",
+            get_radius="pulse_radius",
+            stroked=True,
+            get_line_color="color",
+            line_width_min_pixels=1,
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=vessel_rows,
+            get_position="[lon, lat]",
             get_fill_color="ring_color",
             get_radius="ring_radius",
             stroked=True,
             get_line_color="color",
             line_width_min_pixels=2,
             pickable=True,
+            auto_highlight=True,
         ))
         layers.append(pdk.Layer(
             "ScatterplotLayer",
@@ -2637,6 +3181,7 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             get_line_color=[255, 255, 255, 235],
             line_width_min_pixels=2,
             pickable=True,
+            auto_highlight=True,
         ))
     if selected_rows:
         layers.append(pdk.Layer(
@@ -2671,6 +3216,17 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
             get_alignment_baseline="'top'",
             get_text_anchor="'middle'",
         ))
+        layers.append(pdk.Layer(
+            "TextLayer",
+            data=vessel_rows,
+            get_position="[lon, lat]",
+            get_text="heading_label",
+            get_color=[191, 219, 254, 230],
+            get_size=9,
+            get_pixel_offset=[0, -32],
+            get_alignment_baseline="'bottom'",
+            get_text_anchor="'middle'",
+        ))
 
     return pdk.Deck(
         map_style=MAP_STYLE,
@@ -2678,10 +3234,15 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
         initial_view_state=pdk.ViewState(latitude=22, longitude=55, zoom=1.3, pitch=48, bearing=-18),
         tooltip={
             "html": (
-                "<b>{name}</b><br/>Status: {status}<br/>Nearest port: {nearest_port}<br/>"
-                "Cargo: {cargo}<br/>Speed: {speed}<br/>Signal age: {signal}<br/>"
-                "Priority: {priority}<br/>Command: {command}<br/>"
-                "API point: {api_position}<br/>Motion: {motion_source} ({motion_nm} nm)"
+                "<b>{name}</b><br/>MMSI/ID: {mmsi}<br/>Status: {status}<br/>"
+                "Route: {route}<br/>Destination: {destination}<br/>Nearest port: {nearest_port}<br/>"
+                "Cargo: {cargo} ({cargo_class})<br/>Cargo value: {cargo_value}<br/>"
+                "Cargo source: {cargo_source} | Verified: {verified_manifest}<br/>"
+                "Speed: {speed}<br/>Heading: {heading}<br/>ETA: {eta}<br/>Signal age: {signal}<br/>"
+                "Priority: {priority}<br/>Command: {command}<br/>AI: {ai_recommendation}<br/>"
+                "Wind/Wave: {wind} / {wave}<br/>Control: {control}<br/>"
+                "API point: {api_position}<br/>Map point: {display_position}<br/>"
+                "Motion: {motion_source} ({motion_nm} nm)"
             ),
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
@@ -2690,9 +3251,41 @@ def fleet_operations_deck(vessels, routes=None, selected_name=None):
 
 def render_fleet_operations_legend():
     st.caption(
-        "Fleet Control Tower overlays: 3D port workload columns | AIS berth-assignment arcs | "
-        "vessel slot rings | dispatch command labels | route lane context"
+        "3D maritime map: animated AIS ships, course vectors, wake trails, weather cells, threat heat, "
+        "port congestion zones, route comparison lanes, and hover details."
     )
+
+
+def render_fleet_live_map_panel(vessels, routes, selected_name, map_height, weather=None, congestion=None):
+    live_vessels = vessels
+    source = "current page data"
+    updated_at = None
+    try:
+        live = api_get("/ai/live")
+        snapshot = live.get("snapshot", {})
+        api_vessels = snapshot.get("vessels", [])
+        if api_vessels:
+            limit = max(1, len(vessels or api_vessels))
+            live_vessels = api_vessels[:limit]
+            source = snapshot.get("source", "API live feed")
+            updated_at = live.get("live_updated_at") or snapshot.get("timestamp")
+    except Exception as error:
+        st.caption(f"Live map refresh using current page data because API refresh failed: {error}")
+
+    st.caption(
+        f"Animated API map: {len(live_vessels or [])} ships | Source: {source}"
+        + (f" | Last signal: {updated_at}" if updated_at else "")
+        + " | Hover any ship for details"
+    )
+    st.pydeck_chart(
+        fleet_operations_deck(live_vessels, routes or [], selected_name=selected_name, weather=weather, congestion=congestion),
+        use_container_width=True,
+        height=map_height,
+    )
+
+
+if hasattr(st, "fragment"):
+    render_fleet_live_map_panel = st.fragment(run_every="8s")(render_fleet_live_map_panel)
 
 
 def fleet_port_workload_rows(vessels):
@@ -2884,7 +3477,7 @@ def render_floating_ship_map(vessels):
     components.html(html, height=380)
 
 
-def render_interactive_fleet_map(vessels, routes=None):
+def render_interactive_fleet_map(vessels, routes=None, weather=None, congestion=None):
     init_fleet_incident_state()
     st.markdown("### Fleet Operations Map")
     if not vessels:
@@ -2983,11 +3576,7 @@ def render_interactive_fleet_map(vessels, routes=None):
 
     render_fleet_operations_legend()
     map_height = 380 if st.session_state.get("mobile_performance_mode") else 520
-    st.pydeck_chart(
-        fleet_operations_deck(visual_vessels_for_map, routes or [], selected_name=target_name),
-        use_container_width=True,
-        height=map_height,
-    )
+    render_fleet_live_map_panel(visual_vessels_for_map, routes or [], target_name, map_height, weather=weather, congestion=congestion)
 
     destroyed_count = len(st.session_state.destroyed_ship_ids)
     damaged_count = len(st.session_state.damaged_ship_ids)
@@ -3532,10 +4121,12 @@ def dashboard_cargo_ship_rows(routes, live=None):
 
             ship_rows.append({
                 "name": vessel.get("name", f"Cargo Ship {index + 1}"),
+                "mmsi": vessel.get("mmsi") or vessel.get("id") or "Unknown",
                 "lat": lat,
                 "lon": lon,
                 "api_lat": vessel_api_lat(vessel),
                 "api_lon": vessel_api_lon(vessel),
+                "display_position": f"{lat:.4f}, {lon:.4f}",
                 "route": route_name,
                 "origin": origin,
                 "destination": destination,
@@ -3543,6 +4134,8 @@ def dashboard_cargo_ship_rows(routes, live=None):
                 "cargo_class": cargo_class,
                 "tons": f"{int(cargo_tons):,} tons" if isinstance(cargo_tons, (int, float)) else str(cargo_tons),
                 "value": cargo_value,
+                "cargo_source": vessel.get("cargo_source", "Unknown"),
+                "verified_manifest": "Yes" if vessel.get("cargo_verified") else "No",
                 "eta": _format_eta_hours(vessel.get("eta_hours")),
                 "progress": f"{progress_value * 100:.0f}%",
                 "progress_value": round(progress_value * 100, 1),
@@ -3553,7 +4146,7 @@ def dashboard_cargo_ship_rows(routes, live=None):
                 "color": color,
                 "halo": color[:3] + [65],
                 "label": f"{vessel.get('name', 'Vessel')} | {cargo_name}",
-                "marker": "ðŸš¢",
+                "marker": ">",
                 "angle": heading,
                 "risk": round(risk, 2),
                 "band": decision.get("band", risk_label(risk)),
@@ -3593,8 +4186,12 @@ def dashboard_cargo_ship_rows(routes, live=None):
 
         ship_rows.append({
             "name": f"Cargo Ship {index + 1}",
+            "mmsi": "Simulated",
             "lat": lat,
             "lon": lon,
+            "api_lat": lat,
+            "api_lon": lon,
+            "display_position": f"{lat:.4f}, {lon:.4f}",
             "route": route_name,
             "origin": origin,
             "destination": destination,
@@ -3602,6 +4199,8 @@ def dashboard_cargo_ship_rows(routes, live=None):
             "cargo_class": cargo["class"],
             "tons": f"{cargo['tons']:,} tons",
             "value": cargo["value"],
+            "cargo_source": "Fallback manifest",
+            "verified_manifest": "Demo",
             "eta": f"{remaining_days:.1f} days",
             "progress": f"{progress * 100:.0f}%",
             "progress_value": round(progress * 100, 1),
@@ -3612,12 +4211,14 @@ def dashboard_cargo_ship_rows(routes, live=None):
             "color": cargo["color"],
             "halo": cargo["color"][:3] + [55],
             "label": f"{cargo['cargo']} -> {destination}",
-            "marker": "ðŸš¢",
+            "marker": ">",
             "angle": angle,
             "risk": route.get("risk_level", 0),
             "band": risk_label(route.get("risk_level", 0)),
             "detail": f"Carrying {cargo['cargo']} from {origin} to {destination}",
             "source": "Local fallback simulation",
+            "motion_source": "Fallback route animation",
+            "motion_nm": round(progress * float(route.get("distance", 0) or 0), 1),
         })
         wake_rows.append({
             "name": f"Wake {index + 1}",
@@ -3628,7 +4229,7 @@ def dashboard_cargo_ship_rows(routes, live=None):
     return ship_rows, wake_rows
 
 
-def dashboard_trade_pulse_deck(overview, routes, live=None):
+def dashboard_trade_pulse_deck(overview, routes, live=None, weather=None, congestion=None):
     assessment_by_route = {
         item.get("route"): item
         for item in overview.get("top_routes", [])
@@ -3742,7 +4343,41 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
         })
 
     ship_rows, ship_wake_rows = dashboard_cargo_ship_rows(routes, live)
+    weather_rows = weather_cell_rows(weather)
+    congestion_rows = congestion_zone_rows(congestion, port_rows)
+    comparison_rows = route_comparison_rows(routes, assessment_by_route)
+    heat_rows = threat_heat_rows(overview=overview, routes=routes, vessels=ship_rows, assessment_by_route=assessment_by_route)
+    course_rows = course_vector_rows(ship_rows)
     layers = []
+    if heat_rows:
+        layers.append(pdk.Layer(
+            "HeatmapLayer",
+            data=heat_rows,
+            get_position="[lon, lat]",
+            get_weight="weight",
+            radiusPixels=80,
+            intensity=1.35,
+            threshold=0.035,
+            colorRange=[
+                [14, 116, 144, 0],
+                [45, 212, 191, 65],
+                [250, 204, 21, 105],
+                [245, 158, 11, 145],
+                [220, 38, 38, 205],
+            ],
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=heat_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=1,
+            pickable=True,
+        ))
     if region_rows:
         layers.append(pdk.Layer(
             "ScatterplotLayer",
@@ -3754,6 +4389,28 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
             get_line_color="line",
             line_width_min_pixels=2,
             pickable=True,
+        ))
+    if comparison_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=comparison_rows,
+            get_path="path",
+            get_color="glow",
+            get_width=24,
+            width_min_pixels=3,
+            rounded=True,
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=comparison_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
+            pickable=True,
+            auto_highlight=True,
         ))
     if arc_rows:
         layers.append(pdk.Layer(
@@ -3767,6 +4424,29 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
             pickable=True,
             auto_highlight=True,
         ))
+    if weather_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=weather_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=2,
+            pickable=True,
+        ))
+        layers.append(pdk.Layer(
+            "ColumnLayer",
+            data=weather_rows,
+            get_position="[lon, lat]",
+            get_elevation="elevation",
+            elevation_scale=55,
+            radius=85000,
+            get_fill_color="line",
+            pickable=True,
+            auto_highlight=True,
+        ))
     if ship_wake_rows:
         layers.append(pdk.Layer(
             "PathLayer",
@@ -3776,6 +4456,29 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
             get_width=4,
             width_min_pixels=1,
             rounded=True,
+        ))
+    if course_rows:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=course_rows,
+            get_path="path",
+            get_color="color",
+            get_width="width",
+            width_min_pixels=2,
+            rounded=True,
+            pickable=True,
+        ))
+    if congestion_rows:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=congestion_rows,
+            get_position="[lon, lat]",
+            get_fill_color="color",
+            get_radius="radius",
+            stroked=True,
+            get_line_color="line",
+            line_width_min_pixels=2,
+            pickable=True,
         ))
     if port_rows:
         layers.append(pdk.Layer(
@@ -3853,12 +4556,16 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
         initial_view_state=pdk.ViewState(latitude=24, longitude=48, zoom=1.25, pitch=48, bearing=-18),
         tooltip={
             "html": (
-                "<b>{name}</b><br/>{detail}<br/>Route: {route}<br/>"
-                "Cargo: {cargo}<br/>Tonnage: {tons}<br/>Value: {value}<br/>"
-                "Speed: {speed}<br/>ETA: {eta}<br/>Progress: {progress}<br/>"
+                "<b>{name}</b><br/>{detail}<br/>MMSI/ID: {mmsi}<br/>Route: {route}<br/>"
+                "Origin: {origin}<br/>Destination: {destination}<br/>"
+                "Cargo: {cargo} ({cargo_class})<br/>Tonnage: {tons}<br/>Value: {value}<br/>"
+                "Cargo source: {cargo_source} | Verified: {verified_manifest}<br/>"
+                "Speed: {speed}<br/>Heading: {heading}<br/>ETA: {eta}<br/>Progress: {progress}<br/>"
                 "Risk: {risk}<br/>Status/Band: {status}{band}<br/>"
+                "Wind/Wave: {wind} / {wave}<br/>Control: {control}<br/>"
                 "Last signal: {last_signal}<br/>Source: {source}<br/>"
-                "API point: {api_lat}, {api_lon}<br/>Motion: {motion_source} ({motion_nm} nm)"
+                "API point: {api_lat}, {api_lon}<br/>Map point: {display_position}<br/>"
+                "Motion: {motion_source} ({motion_nm} nm)"
             ),
             "style": {"backgroundColor": "#07111f", "color": "#e5f7ff"},
         },
@@ -3868,10 +4575,17 @@ def dashboard_trade_pulse_deck(overview, routes, live=None):
 def render_dashboard_trade_pulse_map(overview, routes):
     live = None
     live_error = None
+    weather = {}
+    congestion = {}
     try:
-        live = api_get("/ai/live", fresh=True)
+        live = api_get("/ai/live")
     except Exception as error:
         live_error = error
+    try:
+        weather = api_get("/weather/maritime")
+        congestion = api_get("/ports/congestion")
+    except Exception as overlay_error:
+        st.caption(f"Advanced map overlays are using built-in fallback context: {overlay_error}")
 
     snapshot = (live or {}).get("snapshot", {})
     live_summary = snapshot.get("summary", {})
@@ -3881,7 +4595,7 @@ def render_dashboard_trade_pulse_map(overview, routes):
 
     pulse_col, signal_col, vessel_col, risk_col = st.columns(4)
     with pulse_col:
-        st.metric("Live Feed", source_label, "1s refresh" if live else "local animation")
+        st.metric("Live Feed", source_label, "optimized refresh" if live else "local animation")
     with signal_col:
         st.metric("Signal Age", f"{signal_age:.0f}s" if signal_age is not None else "Unknown")
     with vessel_col:
@@ -3892,7 +4606,8 @@ def render_dashboard_trade_pulse_map(overview, routes):
     if live_error:
         st.warning(f"Live vessel feed is unavailable, so the map is using local fallback motion. Details: {live_error}")
 
-    st.pydeck_chart(dashboard_trade_pulse_deck(overview, routes, live), use_container_width=True, height=520)
+    st.caption("Layers: animated ships, weather cells, threat heatmap, port congestion columns, and route comparison lanes.")
+    st.pydeck_chart(dashboard_trade_pulse_deck(overview, routes, live, weather=weather, congestion=congestion), use_container_width=True, height=520)
     ship_rows, _ = dashboard_cargo_ship_rows(routes, live)
     manifest_df = pd.DataFrame(ship_rows)
     if not manifest_df.empty:
@@ -4036,7 +4751,7 @@ def render_mission_overlay(overlay):
 
 
 if hasattr(st, "fragment"):
-    render_dashboard_trade_pulse_map = st.fragment(run_every="5s")(render_dashboard_trade_pulse_map)
+    render_dashboard_trade_pulse_map = st.fragment(run_every="8s")(render_dashboard_trade_pulse_map)
 
 
 def show_global_dashboard():
@@ -4141,7 +4856,9 @@ def show_fleet_tracking():
         registry_vessels = api_get("/vessels")
         routes = api_get("/routes")
         operations = api_get("/analytics/operations")
-        live = api_get("/ai/live", fresh=True)
+        live = api_get("/ai/live")
+        weather = api_get("/weather/maritime")
+        congestion = api_get("/ports/congestion")
     except Exception as e:
         show_api_error("Fleet data", e)
         return
@@ -4209,7 +4926,7 @@ def show_fleet_tracking():
             st.caption(f"AIS reliability snapshot unavailable: {e}")
 
     render_fleet_control_tower(vessels)
-    render_interactive_fleet_map(vessels, routes)
+    render_interactive_fleet_map(vessels, routes, weather=weather, congestion=congestion)
 
     if vessels:
         st.markdown("### Real Vessel Detail")
@@ -6212,19 +6929,118 @@ def show_strategic_autopilot():
 
 
 def show_command_copilot():
-    st.title("AI Problem Solver")
-    st.caption("Topic-locked maritime assistant for route safety, AIS live data, cargo exposure, threats, forecasts, fleet operations, reports, and access issues.")
     st.markdown(
         """
-        <div class="solver-hero">
-            <b>No generic human chat here.</b>
-            <span>Describe an operational problem and the AI returns a diagnosis, evidence from the live platform, a severity level, and a page to open next.</span>
-        </div>
+<style>
+.copilot-header {
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(15, 23, 42, 0.8));
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    border-radius: 16px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2), inset 0 0 20px rgba(56, 189, 248, 0.1);
+    position: relative;
+    overflow: hidden;
+}
+.copilot-header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(56, 189, 248, 0.1) 0%, transparent 60%);
+    animation: rotate 20s linear infinite;
+    z-index: 0;
+}
+.copilot-header > div {
+    position: relative;
+    z-index: 1;
+}
+.copilot-title {
+    font-size: 2.5rem;
+    font-weight: 900;
+    color: #e0f2fe;
+    text-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
+    margin-bottom: 0.5rem;
+    letter-spacing: 1px;
+}
+.copilot-subtitle {
+    color: #bae6fd;
+    font-size: 1.1rem;
+    line-height: 1.6;
+}
+.solver-hero {
+    background: rgba(2, 6, 23, 0.6);
+    border-left: 4px solid #38bdf8;
+    padding: 1rem 1.5rem;
+    border-radius: 0 8px 8px 0;
+    margin-top: 1.5rem;
+}
+.solver-hero b {
+    color: #38bdf8;
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 1.1rem;
+}
+.solver-hero span {
+    color: #94a3b8;
+}
+.action-step {
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(56, 189, 248, 0.2);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+    color: #e2e8f0;
+}
+.action-step b {
+    color: #38bdf8;
+    margin-right: 0.5rem;
+}
+.solver-answer {
+    background: rgba(2, 6, 23, 0.7);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    box-shadow: inset 0 0 20px rgba(16, 185, 129, 0.05);
+}
+.solver-chip {
+    display: inline-block;
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    padding: 0.25rem 0.75rem;
+    border-radius: 99px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.solver-answer h3 {
+    color: #f8fafc;
+    margin: 0;
+    font-size: 1.4rem;
+    line-height: 1.5;
+}
+</style>
+<div class="copilot-header">
+<div>
+<div class="copilot-title">AI Command Copilot</div>
+<div class="copilot-subtitle">Topic-locked maritime intelligence assistant. Solves complex routing, threat analysis, and fleet operations automatically.</div>
+<div class="solver-hero">
+<b>Strictly Operational Intelligence.</b>
+<span>Describe your scenario. The AI will cross-reference live platform data to return a structured diagnosis, severity level, and execution plan.</span>
+</div>
+</div>
+</div>
         """,
         unsafe_allow_html=True,
     )
 
-    with st.expander("Global Safest Route Planner", expanded=True):
+    with st.expander("🌍 Global Safest Route Planner", expanded=True):
         st.caption("Try: Mumbai to Rotterdam, Singapore to New York, Shanghai to Los Angeles, Busan to Vancouver, Sydney to Auckland.")
         route_col1, route_col2, route_col3 = st.columns([1, 1, 0.8])
         with route_col1:
@@ -6237,7 +7053,9 @@ def show_command_copilot():
             run_global_route = st.button("Find Safest Route", use_container_width=True)
         if run_global_route:
             try:
-                plan = api_get(f"/copilot/global-route?origin={quote(global_origin)}&destination={quote(global_destination)}")
+                with st.spinner("AI calculating safest global route..."):
+                    plan = api_get(f"/copilot/global-route?origin={quote(global_origin)}&destination={quote(global_destination)}")
+                    time.sleep(0.5)
                 recommended = plan.get("recommended", {})
                 if recommended:
                     st.success(
@@ -6245,9 +7063,10 @@ def show_command_copilot():
                         f"Risk {recommended.get('risk_score')}/10 ({recommended.get('risk_band')}) | "
                         f"{recommended.get('distance_nm')} nm"
                     )
-                    st.caption(recommended.get("why", "No explanation returned."))
+                    st.info(f"**AI Reasoning:** {recommended.get('why', 'No explanation returned.')}")
                 alternatives = pd.DataFrame(plan.get("alternatives", []))
                 if not alternatives.empty:
+                    st.markdown("#### Alternative Routes Evaluated")
                     st.dataframe(
                         alternatives[["recommended", "route", "risk_score", "risk_band", "distance_nm", "detour_ratio", "why"]],
                         use_container_width=True,
@@ -6283,7 +7102,7 @@ def show_command_copilot():
     if "problem_solver_topic" not in st.session_state:
         st.session_state.problem_solver_topic = "Auto"
 
-    st.markdown("### Problem Templates")
+    st.markdown("### 🧠 Scenario Templates")
     template_cols = st.columns(3)
     for index, (label, text) in enumerate(examples):
         with template_cols[index % 3]:
@@ -6294,33 +7113,33 @@ def show_command_copilot():
 
     input_col, guide_col = st.columns([1.2, 0.8])
     with input_col:
-        selected_topic = st.selectbox("Topic boundary", topic_options, key="problem_solver_topic")
+        selected_topic = st.selectbox("Topic Boundary Restriction", topic_options, key="problem_solver_topic")
         problem = st.text_area(
-            "Operational problem",
+            "Operational Problem Description",
             key="problem_solver_prompt",
             height=150,
             placeholder="Example: AIS vessels near Rotterdam are stale and cargo P1 route release is due in 2 hours.",
         )
-        solve_now = st.button("Solve Problem", type="primary", use_container_width=True, icon=":material/psychology:")
+        solve_now = st.button("Initialize AI Diagnostics", type="primary", use_container_width=True, icon=":material/psychology:")
     with guide_col:
-        st.markdown("### What It Can Solve")
-        st.caption("Route choices, safest global corridors, AIS/API issues, cargo exposure, threat alerts, forecast watch windows, fleet readiness, reports, settings, and strict access roles.")
-        st.markdown("### What It Will Refuse")
-        st.caption("General small talk, unrelated personal questions, and anything outside this maritime trade-intelligence project.")
+        st.info("ℹ️ **Capabilities:** AI handles route choices, safest corridors, AIS/API issues, cargo exposure, threats, forecasts, fleet readiness, and access roles.")
+        st.warning("⚠️ **Strict Rules:** General small talk, non-maritime questions, and unregulated access requests are actively rejected by the Copilot API.")
 
     if solve_now:
         if not problem.strip():
             st.warning("Describe the operational problem first.")
         else:
             try:
-                st.session_state.problem_solver_result = api_post(
-                    "/copilot/problem-solver",
-                    {
-                        "problem": problem,
-                        "topic": selected_topic,
-                        "role": current_role(),
-                    },
-                ).json()
+                with st.spinner("AI Copilot is analyzing live intelligence data..."):
+                    st.session_state.problem_solver_result = api_post(
+                        "/copilot/problem-solver",
+                        {
+                            "problem": problem,
+                            "topic": selected_topic,
+                            "role": current_role(),
+                        },
+                    ).json()
+                    time.sleep(0.75)
             except Exception as e:
                 show_api_error("AI Problem Solver", e)
                 return
@@ -6329,58 +7148,65 @@ def show_command_copilot():
     if not result:
         return
 
+    st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 2rem 0;'>", unsafe_allow_html=True)
+    st.markdown("### 🤖 Intelligence Report")
+
     severity = str(result.get("severity", "info")).lower()
     if result.get("status") == "off_topic":
-        st.info(result.get("answer", "This problem is outside the configured maritime topics."))
+        st.warning(result.get("answer", "This problem is outside the configured maritime topics."))
     elif severity == "critical":
-        st.error(result.get("answer", "Critical issue detected."))
+        st.error(f"🚨 **CRITICAL ALERT:** {result.get('answer', 'Critical issue detected.')}")
     elif severity == "watch":
-        st.warning(result.get("answer", "Watch issue detected."))
+        st.warning(f"⚠️ **WATCH ITEM:** {result.get('answer', 'Watch issue detected.')}")
     elif severity == "normal":
-        st.success(result.get("answer", "No critical issue detected."))
+        st.success(f"✅ **ALL CLEAR:** {result.get('answer', 'No critical issue detected.')}")
     else:
-        st.info(result.get("answer", "Problem reviewed."))
+        st.info(f"ℹ️ **ANALYSIS:** {result.get('answer', 'Problem reviewed.')}")
 
     metric_cols = st.columns(4)
     with metric_cols[0]:
-        st.metric("Topic", result.get("topic", "Unknown"))
+        st.metric("Subject Domain", result.get("topic", "Unknown"))
     with metric_cols[1]:
-        st.metric("Severity", severity.title())
+        st.metric("Assessed Severity", severity.title())
     with metric_cols[2]:
-        st.metric("Confidence", f"{result.get('confidence', 0)}%")
+        st.metric("AI Confidence", f"{result.get('confidence', 0)}%")
     with metric_cols[3]:
-        st.metric("Open Next", result.get("open_page", "Command Copilot"))
+        st.metric("Recommended View", result.get("open_page", "Command Copilot"))
 
     st.markdown(
         f"""
-        <div class="solver-answer">
-            <span class="solver-chip">AI field decision</span>
-            <h3>{safe_html(result.get("answer", "No decision returned."))}</h3>
-        </div>
+<div class="solver-answer">
+<span class="solver-chip">AI Field Decision</span>
+<h3>{safe_html(result.get("answer", "No decision returned."))}</h3>
+</div>
         """,
         unsafe_allow_html=True,
     )
 
     diag_col, action_col = st.columns([1, 1])
     with diag_col:
-        st.markdown("### Diagnosis & Evidence")
+        st.markdown("#### Diagnosis & Live Evidence")
         diagnosis = result.get("diagnosis", [])
         evidence = result.get("evidence", [])
         if diagnosis:
-            st.dataframe(pd.DataFrame({"Diagnosis": diagnosis}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"Diagnostic Markers": diagnosis}), use_container_width=True, hide_index=True)
         if evidence:
-            st.dataframe(pd.DataFrame({"Evidence": evidence}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"Corroborating Evidence": evidence}), use_container_width=True, hide_index=True)
     with action_col:
-        st.markdown("### Action Plan")
+        st.markdown("#### Suggested Execution Plan")
         for index, action in enumerate(result.get("action_plan", []), start=1):
             st.markdown(
-                f'<div class="action-step"><b>{index}.</b> {safe_html(action)}</div>',
+                f"""
+<div class="action-step">
+<b>STEP {index}</b> {safe_html(action)}
+</div>
+                """,
                 unsafe_allow_html=True,
             )
         if result.get("status") == "off_topic":
             st.caption("Allowed topics: " + ", ".join(result.get("allowed_topics", [])))
 
-    with st.expander("Copy-Ready AI Response"):
+    with st.expander("📋 Export Copy-Ready Response"):
         st.code(
             "\n".join(
                 [
@@ -6394,11 +7220,11 @@ def show_command_copilot():
             ),
             language="text",
         )
-    with st.expander("AI Explainability & Limits"):
+    with st.expander("🔍 AI Explainability & Audit Constraints"):
         explain = result.get("explainability", {})
-        st.caption(explain.get("method", "No explainability returned."))
-        inputs = pd.DataFrame({"Inputs": explain.get("inputs", [])})
-        limits = pd.DataFrame({"Limits": explain.get("limits", [])})
+        st.caption(f"**Analysis Engine:** {explain.get('method', 'No explainability returned.')}")
+        inputs = pd.DataFrame({"Data Inputs Considered": explain.get("inputs", [])})
+        limits = pd.DataFrame({"Known Blindspots/Limits": explain.get("limits", [])})
         ex_col1, ex_col2 = st.columns(2)
         with ex_col1:
             if not inputs.empty:
@@ -6743,191 +7569,314 @@ def access_label_for_role(role):
 def render_login_gate(auth_meta):
     st.markdown(
         """
-        <div class="login-shell">
-            <div class="login-badge">SECURE COMMAND ACCESS</div>
-            <div class="login-title">Sign In To Maritime Command</div>
-            <div class="login-subtitle">Use your account email and password. The platform detects your access level automatically and asks for only the verification your account needs.</div>
-        </div>
+        <style>
+        .login-wrapper { max-width: 800px; margin: 0 auto; padding: 2rem; }
+        .login-header { text-align: center; margin-bottom: 2rem; }
+        .login-badge-new { display: inline-block; background: rgba(34, 211, 238, 0.15); color: #22d3ee; padding: 0.4rem 1rem; border-radius: 99px; font-size: 0.8rem; font-weight: bold; letter-spacing: 0.1em; border: 1px solid rgba(34, 211, 238, 0.3); margin-bottom: 1rem; text-transform: uppercase; }
+        .login-title-new { font-size: 3rem; font-weight: 800; background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; line-height: 1.2; text-shadow: 0 4px 24px rgba(255, 255, 255, 0.1); }
+        .login-subtitle-new { color: #94a3b8; font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.5; }
+        .info-card { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; backdrop-filter: blur(12px); text-align: center; }
+        .info-card h3 { margin-top: 0; color: #f8fafc; font-size: 1.25rem; margin-bottom: 0.5rem; }
+        .info-card p { color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1rem; }
+        .role-grid { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+        .role-item { background: rgba(30, 41, 59, 0.5); border-radius: 12px; padding: 1rem; border: 1px solid rgba(148, 163, 184, 0.1); flex: 1; min-width: 150px; }
+        .role-item strong { display: block; color: #e2e8f0; margin-bottom: 0.25rem; font-size: 1rem; }
+        .role-item span { color: #94a3b8; font-size: 0.85rem; line-height: 1.4; }
+        .settings-band-new { background: rgba(34, 211, 238, 0.05); border-left: 4px solid #22d3ee; padding: 1rem 1.25rem; border-radius: 0 8px 8px 0; margin: 1.5rem 0; color: #e2e8f0; }
+        .settings-band-new b { color: #22d3ee; }
+        .form-container { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 16px; padding: 2rem; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2); }
+        </style>
+        <div class="login-wrapper"><div class="login-header"><div class="login-badge-new">Secure Command Access</div><div class="login-title-new">Maritime Command OS</div><div class="login-subtitle-new">Authenticate to access the intelligence platform. The system will automatically route you based on your clearance level.</div></div><div class="info-card"><h3>Adaptive Access Architecture</h3><p>Security dynamically scales with your role profile. High-privilege actions demand step-up verification.</p><div class="role-grid"><div class="role-item"><strong>Admin Control</strong><span>Fingerprint + Passphrase<br>Full system command</span></div><div class="role-item"><strong>Operator Hub</strong><span>MFA / Passkey<br>Fleet and risk workflows</span></div><div class="role-item"><strong>Public Portal</strong><span>Social / Guest Login<br>Read-only overview</span></div></div></div></div>
         """,
         unsafe_allow_html=True,
     )
-
-    st.markdown(
-        """
-        <div class="login-panel">
-            <h3>Real Sign In Flow</h3>
-            <p>No role picking. Admin gets biometric confirmation, Operator gets MFA, and Public access stays read-only.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        st.markdown('<div class="login-kpi"><b>Admin</b><span>Fingerprint + phrase. Full command permissions.</span></div>', unsafe_allow_html=True)
-    with k2:
-        st.markdown('<div class="login-kpi"><b>Operator</b><span>Fleet, cargo, risk queue, ETA, alerts, and reports.</span></div>', unsafe_allow_html=True)
-    with k3:
-        st.markdown('<div class="login-kpi"><b>Public</b><span>Guest/social login with safe read-only access.</span></div>', unsafe_allow_html=True)
 
     entry_options = ["Sign In", "Create Account", "Public Access"]
     if st.session_state.get("auth_flow_mode") not in entry_options:
         st.session_state.auth_flow_mode = "Sign In"
-    flow = render_workspace_switch("Account", entry_options, "auth_flow_mode")
+        
+    st.markdown("<br>", unsafe_allow_html=True)
+    # Wrap the tabs/switch in a centered container using columns
+    _, center_col, _ = st.columns([1, 6, 1])
+    with center_col:
+        flow = render_workspace_switch("Authentication Flow", entry_options, "auth_flow_mode")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    if flow == "Sign In":
-        st.markdown("### Sign In")
-        if "login_email" not in st.session_state:
-            st.session_state.login_email = ""
-        if "login_password" not in st.session_state:
-            st.session_state.login_password = ""
-        with st.expander("Demo shortcuts", expanded=False):
-            demo_cols = st.columns(2)
-            with demo_cols[0]:
-                if st.button("Use Admin demo", use_container_width=True):
-                    st.session_state.login_email = "admin@demo.app"
-                    st.session_state.login_password = "admin-demo"
-                    st.rerun()
-            with demo_cols[1]:
-                if st.button("Use Operator demo", use_container_width=True):
-                    st.session_state.login_email = "operator@demo.app"
-                    st.session_state.login_password = "operator-demo"
-                    st.rerun()
-            st.caption("Operator MFA demo code can be any 6 digits, for example `123456`.")
+        if flow == "Sign In":
+            if "login_email" not in st.session_state:
+                st.session_state.login_email = ""
+            if "login_password" not in st.session_state:
+                st.session_state.login_password = ""
+                
+            with st.expander("🛠️ Quick Demo Access (Local Only)", expanded=False):
+                st.markdown("Use these shortcuts to bypass manual entry for demonstration purposes.")
+                demo_cols = st.columns(2)
+                with demo_cols[0]:
+                    if st.button("Load Admin Profile", use_container_width=True, icon="👑"):
+                        st.session_state.login_email = "admin@demo.app"
+                        st.session_state.login_password = "admin-demo"
+                        st.rerun()
+                with demo_cols[1]:
+                    if st.button("Load Operator Profile", use_container_width=True, icon="🚢"):
+                        st.session_state.login_email = "operator@demo.app"
+                        st.session_state.login_password = "operator-demo"
+                        st.rerun()
+                st.caption("ℹ️ Note: Operator MFA code can be any 6 digits (e.g., `123456`).")
 
-        email = st.text_input("Email", key="login_email", placeholder="you@company.com")
-        detected_role, detected_account = detected_login_role(email)
-        access_label = access_label_for_role(detected_role)
-        policy = security_policy_for(auth_meta, detected_role)
-        st.markdown(
-            f"""
-            <div class="settings-band">
-                <b>Detected access:</b> {safe_html(access_label)}
-                <br>{safe_html(policy.get('risk', 'Enter your email to detect access policy.'))}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption(policy.get("risk", "No role risk note available."))
-        render_security_pills(policy.get("permissions", sorted(ROLE_PERMISSIONS.get(detected_role, set()))))
+            st.markdown('<div class="form-container">', unsafe_allow_html=True)
+            email = st.text_input("Email Address", key="login_email", placeholder="commander@maritime.gov")
+            detected_role, detected_account = detected_login_role(email)
+            access_label = access_label_for_role(detected_role)
+            policy = security_policy_for(auth_meta, detected_role)
+            
+            st.markdown(
+                f"""
+<div class="settings-band-new">
+    <b>Detected Clearance:</b> {safe_html(access_label)}<br>
+    <span style="font-size: 0.9em; opacity: 0.8;">{safe_html(policy.get('risk', 'Enter your email to evaluate access policy.'))}</span>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+            render_security_pills(policy.get("permissions", sorted(ROLE_PERMISSIONS.get(detected_role, set()))))
 
-        with st.form("real_account_login", clear_on_submit=False):
-            password = st.text_input("Password", key="login_password", type="password", placeholder="Enter password")
-            biometric_ok = False
-            phrase = ""
-            mfa_code = ""
-            responsibility = True
-            if detected_role == "Admin":
-                st.markdown(
-                    """
-                    <div class="fingerprint-panel">
-                        <div class="fingerprint-ring">SCAN</div>
-                        <div><b>Admin verification</b><br>Fingerprint confirmation plus exact command phrase.</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                biometric_ok = st.checkbox("Fingerprint verified")
-                phrase = st.text_input("Admin phrase", type="password", placeholder="ADMIN ACCESS")
-                responsibility = st.checkbox("I accept Admin responsibility for command actions.")
-            elif detected_role == "Operator":
-                mfa_code = st.text_input("MFA / passkey code", type="password", max_chars=6, placeholder="123456")
-            remember_device = st.checkbox("Keep this signed in on this device", value=True)
-            submitted = st.form_submit_button("Sign In", use_container_width=True)
+            with st.form("real_account_login", clear_on_submit=False):
+                st.markdown("### Authentication Details")
+                password = st.text_input("Password", key="login_password", type="password", placeholder="••••••••")
+                biometric_ok = False
+                phrase = ""
+                mfa_code = ""
+                responsibility = True
+                
+                if detected_role == "Admin":
+                    st.markdown("#### Step-Up Verification Required")
+                    components.html(
+                        """
+                        <style>
+                            .fingerprint-panel {
+                                display: flex;
+                                align-items: center;
+                                gap: 1rem;
+                                padding: 1rem;
+                                border-radius: 12px;
+                                border: 1px solid rgba(20, 184, 166, 0.4);
+                                background: linear-gradient(135deg, rgba(20, 184, 166, 0.15), rgba(15, 23, 42, 0.8));
+                                color: #e0f2fe;
+                                font-family: "Segoe UI", sans-serif;
+                                cursor: pointer;
+                                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                                box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+                            }
+                            .fingerprint-panel:hover {
+                                background: linear-gradient(135deg, rgba(20, 184, 166, 0.25), rgba(15, 23, 42, 0.9));
+                                transform: translateY(-2px);
+                                box-shadow: 0 12px 20px rgba(0,0,0,0.3);
+                            }
+                            .fingerprint-ring {
+                                display: grid;
+                                place-items: center;
+                                width: 4rem;
+                                height: 4rem;
+                                border-radius: 50%;
+                                border: 2px dashed rgba(45, 212, 191, 0.8);
+                                color: #99f6e4;
+                                font-size: 0.8rem;
+                                font-weight: 800;
+                                letter-spacing: 1px;
+                                box-shadow: 0 0 30px rgba(20, 184, 166, 0.3) inset;
+                                transition: all 0.4s ease;
+                            }
+                            .fingerprint-panel:hover .fingerprint-ring {
+                                transform: scale(1.05);
+                                border-style: solid;
+                                box-shadow: 0 0 40px rgba(20, 184, 166, 0.5) inset, 0 0 20px rgba(20, 184, 166, 0.4);
+                            }
+                        </style>
+                        <div class="fingerprint-panel" onclick="triggerWebAuthn()">
+                            <div class="fingerprint-ring" id="ring">SCAN</div>
+                            <div>
+                                <b style="font-size: 1.1rem; color: #5eead4;">Biometric Passkey Scan</b><br>
+                                <span style="color: #94a3b8; font-size: 0.9rem;">Click to trigger secure WebAuthn challenge.</span>
+                            </div>
+                        </div>
+                        <script>
+                            async function triggerWebAuthn() {
+                                const ring = document.getElementById("ring");
+                                ring.innerText = "WAIT";
+                                ring.style.borderColor = "#fcd34d";
+                                ring.style.color = "#fcd34d";
+                                try {
+                                    const challenge = new Uint8Array(32);
+                                    window.crypto.getRandomValues(challenge);
+                                    await navigator.credentials.get({
+                                        publicKey: {
+                                            challenge: challenge,
+                                            userVerification: "discouraged",
+                                            timeout: 60000
+                                        }
+                                    });
+                                    ring.style.background = "rgba(16, 185, 129, 0.2)";
+                                    ring.style.borderColor = "#10b981";
+                                    ring.style.color = "#10b981";
+                                    ring.innerText = "VERIFIED";
+                                } catch (err) {
+                                    console.error(err);
+                                    ring.style.borderColor = "#ef4444";
+                                    ring.style.color = "#ef4444";
+                                    ring.innerText = "FAILED";
+                                    alert("Hardware verification unavailable. Please use fallback code.");
+                                }
+                            }
+                        </script>
+                        """,
+                        height=120,
+                    )
+                    biometric_ok = st.checkbox("Bypass: Acknowledge biometric verification", help="Use this if hardware scan fails in development.")
+                    phrase = st.text_input("Authorization Phrase", type="password", placeholder="Enter 'ADMIN ACCESS'")
+                    responsibility = st.checkbox("I assume full responsibility for resulting command actions.", value=False)
+                    
+                elif detected_role == "Operator":
+                    st.markdown("#### Two-Factor Authentication")
+                    mfa_code = st.text_input("Secure MFA Token", type="password", max_chars=6, placeholder="6-digit code")
+                    
+                st.markdown("<hr style='margin: 1.5rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
+                remember_device = st.checkbox("Keep session active on this terminal", value=True)
+                
+                # Make the submit button prominent
+                submitted = st.form_submit_button("Authenticate & Initialize", use_container_width=True, type="primary")
 
-        if submitted:
-            if not email.strip() or not password:
-                st.error("Enter your email and password.")
-            elif detected_role == "Admin" and (not biometric_ok or phrase.strip().upper() != "ADMIN ACCESS" or not responsibility):
-                st.error("Admin sign in requires fingerprint, exact phrase `ADMIN ACCESS`, and responsibility acknowledgement.")
-            elif detected_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
-                st.error("Operator sign in requires a 6-digit MFA/passkey code.")
-            else:
-                try:
-                    payload = {
-                        "email": email,
-                        "password": password,
-                        "biometric_ok": biometric_ok,
-                        "phrase": phrase,
-                        "mfa_code": mfa_code,
-                    }
-                    result = api_post("/auth/login", payload).json()
-                    apply_auth_result(result)
-                    if not remember_device:
-                        clear_session_token()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Sign in failed: {e}")
+            st.markdown('</div>', unsafe_allow_html=True) # Close form container
 
-        reset_col, public_col = st.columns(2)
-        with reset_col:
-            if st.button("Forgot password?", use_container_width=True):
-                st.info("Password reset is ready for production email-provider setup. In this local build, use the demo shortcuts or create a new account.")
-        with public_col:
-            if st.button("Continue as Public Guest", use_container_width=True):
-                sign_in_role("Public", "Guest preview", "guest read-only", "Guest")
-                st.rerun()
-
-    elif flow == "Public Access":
-        st.markdown("### Public Access")
-        st.caption("Public access is read-only. It cannot approve routes, edit cargo, tune AIS, create alerts, or run command actions.")
-        provider_cols = st.columns(3)
-        for index, provider in enumerate(public_provider_options(auth_meta)):
-            with provider_cols[index % 3]:
-                if st.button(provider_label(auth_meta, provider), key=f"login_social_{provider}", use_container_width=True):
+            if submitted:
+                if not email.strip() or not password:
+                    st.error("⚠️ Credentials missing. Please enter email and password.")
+                elif detected_role == "Admin" and (not biometric_ok or phrase.strip().upper() != "ADMIN ACCESS" or not responsibility):
+                    st.error("🛑 Authorization Denied: Admin verification requires biometric bypass, the exact phrase 'ADMIN ACCESS', and acknowledged responsibility.")
+                elif detected_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
+                    st.error("🛑 Authorization Denied: Invalid MFA token format. Expected 6 digits.")
+                else:
                     try:
-                        result = api_post("/auth/social-login", {"provider": provider}).json()
-                        apply_auth_result(result)
+                        with st.spinner("Establishing secure connection..."):
+                            payload = {
+                                "email": email,
+                                "password": password,
+                                "biometric_ok": biometric_ok,
+                                "phrase": phrase,
+                                "mfa_code": mfa_code,
+                            }
+                            result = api_post("/auth/login", payload).json()
+                            apply_auth_result(result)
+                            if not remember_device:
+                                clear_session_token()
+                        st.success("Connection Established. Initializing Command OS...")
+                        time.sleep(0.5)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Social login failed: {e}")
-        if st.button("Continue as Guest", use_container_width=True, key="login_guest_direct"):
-            sign_in_role("Public", "Guest preview", "guest read-only", "Guest")
-            st.rerun()
+                        st.error(f"❌ Connection Failed: {e}")
 
-    elif flow == "Create Account":
-        st.markdown("### Create Account")
-        st.caption("Admin accounts are invite-only. New accounts can be Operator or Public only.")
-        account_type = st.selectbox("Account type", ["Operator", "Public"], key="signup_account_type")
-        new_role = "Operator" if account_type == "Operator" else "Public"
-        providers = provider_options_for(auth_meta, new_role)
-        provider = st.selectbox("Sign-up provider", providers, key="signup_provider")
-        render_security_pills(sorted(ROLE_PERMISSIONS.get(new_role, set())) or ["read only"])
-        with st.form("create_demo_account", clear_on_submit=False):
-            name = st.text_input("Display name", placeholder="Your name")
-            email = st.text_input("Email", placeholder="you@example.com")
-            password = st.text_input("Create password", type="password")
-            confirm_password = st.text_input("Confirm password", type="password")
-            mfa_code = ""
-            if new_role == "Operator":
-                mfa_code = st.text_input("Set MFA / passkey code", type="password", max_chars=6, placeholder="123456")
-            accept_policy = st.checkbox("I accept the role permissions and strict access limits.")
-            submitted = st.form_submit_button("Create Account & Login", use_container_width=True)
-        if submitted:
-            normalized = email.strip().lower()
-            if "@" not in normalized or "." not in normalized.split("@")[-1]:
-                st.error("Enter a valid email address.")
-            elif demo_account_for(normalized):
-                st.error("This account already exists. Use Sign In.")
-            elif len(password) < 6 or password != confirm_password:
-                st.error("Password must be at least 6 characters and match confirmation.")
-            elif new_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
-                st.error("Operator accounts need a 6-digit MFA/passkey code.")
-            elif not accept_policy:
-                st.error("Accept the role permissions and strict access limits.")
-            else:
-                try:
-                    result = api_post("/auth/register", {
-                        "email": normalized,
-                        "display_name": name,
-                        "password": password,
-                        "role": new_role,
-                        "provider": provider,
-                        "mfa_code": mfa_code,
-                    }).json()
-                    apply_auth_result(result)
+            # Auxiliary actions below the form
+            st.markdown("<br>", unsafe_allow_html=True)
+            aux_col1, aux_col2 = st.columns(2)
+            with aux_col1:
+                if st.button("Recover Password", use_container_width=True):
+                    st.info("System recovery requires production mail service. In this environment, use a demo account.")
+            with aux_col2:
+                if st.button("Enter as Guest Viewer", use_container_width=True):
+                    sign_in_role("Public", "Guest preview", "guest read-only", "Guest")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Could not create account: {e}")
+
+        elif flow == "Public Access":
+            st.markdown('<div class="form-container">', unsafe_allow_html=True)
+            st.markdown("### Public Intelligence Portal")
+            st.info("ℹ️ Public access provides a sanitized, read-only view of global operations. Command and control features are strictly disabled.")
+            
+            st.markdown("#### Connect with Identity Provider")
+            provider_cols = st.columns(2)
+            providers = public_provider_options(auth_meta)
+            for index, provider in enumerate(providers):
+                with provider_cols[index % 2]:
+                    if st.button(provider_label(auth_meta, provider), key=f"login_social_{provider}", use_container_width=True):
+                        try:
+                            with st.spinner(f"Connecting via {provider}..."):
+                                result = api_post("/auth/social-login", {"provider": provider}).json()
+                                apply_auth_result(result)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Authentication with {provider} failed: {e}")
+                            
+            st.markdown("<hr style='margin: 1.5rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
+            st.markdown("#### Anonymous Access")
+            if st.button("Continue as Anonymous Guest", use_container_width=True, type="primary", key="login_guest_direct"):
+                sign_in_role("Public", "Guest preview", "guest read-only", "Anonymous User")
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        elif flow == "Create Account":
+            st.markdown('<div class="form-container">', unsafe_allow_html=True)
+            st.markdown("### Personnel Registration")
+            st.warning("Admin clearances must be provisioned manually by Command. This portal registers Operator or Public profiles only.")
+            
+            account_type = st.selectbox("Requested Clearance Level", ["Operator", "Public"], key="signup_account_type")
+            new_role = "Operator" if account_type == "Operator" else "Public"
+            providers = provider_options_for(auth_meta, new_role)
+            provider = st.selectbox("Authentication Identity Provider", providers, key="signup_provider")
+            
+            st.markdown("#### Allocated Capabilities")
+            render_security_pills(sorted(ROLE_PERMISSIONS.get(new_role, set())) or ["read only"])
+            
+            with st.form("create_demo_account", clear_on_submit=False):
+                st.markdown("#### Profile Configuration")
+                col1, col2 = st.columns(2)
+                with col1:
+                    name = st.text_input("Full Name / Callsign", placeholder="e.g. John Doe")
+                with col2:
+                    email = st.text_input("Operational Email", placeholder="user@domain.com")
+                    
+                col3, col4 = st.columns(2)
+                with col3:
+                    password = st.text_input("Access Password", type="password", help="Minimum 6 characters")
+                with col4:
+                    confirm_password = st.text_input("Verify Password", type="password")
+                    
+                mfa_code = ""
+                if new_role == "Operator":
+                    st.markdown("#### Security Setup")
+                    mfa_code = st.text_input("Register 6-Digit MFA Token", type="password", max_chars=6, placeholder="e.g. 123456")
+                    
+                st.markdown("<hr style='margin: 1rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
+                accept_policy = st.checkbox("I agree to the strict usage policies and acknowledge my assigned permissions.", value=False)
+                submitted = st.form_submit_button("Register & Initialize Profile", use_container_width=True, type="primary")
+                
+            if submitted:
+                normalized = email.strip().lower()
+                if "@" not in normalized or "." not in normalized.split("@")[-1]:
+                    st.error("⚠️ Invalid email format provided.")
+                elif demo_account_for(normalized):
+                    st.error("⚠️ An account with this email already exists in the local database. Please Sign In.")
+                elif len(password) < 6 or password != confirm_password:
+                    st.error("⚠️ Passwords must match and contain at least 6 characters.")
+                elif new_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
+                    st.error("⚠️ Operator profiles require a numeric 6-digit MFA token.")
+                elif not accept_policy:
+                    st.error("⚠️ You must agree to the usage policies to proceed.")
+                else:
+                    try:
+                        with st.spinner("Provisioning profile..."):
+                            result = api_post("/auth/register", {
+                                "email": normalized,
+                                "display_name": name,
+                                "password": password,
+                                "role": new_role,
+                                "provider": provider,
+                                "mfa_code": mfa_code,
+                            }).json()
+                            apply_auth_result(result)
+                        st.success("Profile provisioned successfully. Logging in...")
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Registration failed: {e}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 def show_setup_checklist_panel():
@@ -7125,6 +8074,95 @@ def show_external_data_panel():
         st.dataframe(ports_df, use_container_width=True, hide_index=True)
 
 
+def show_upgrade_hub_panel():
+    st.markdown("### Production Upgrade Hub")
+    try:
+        hub = api_get("/production/upgrade-hub", fresh=True)
+        delivery = api_get("/notifications/delivery-plan?severity=critical", fresh=True)
+    except Exception as e:
+        st.error(f"Upgrade hub unavailable: {e}")
+        return
+
+    u1, u2, u3, u4 = st.columns(4)
+    with u1:
+        st.metric("Upgrade Score", f"{hub.get('score', 0)}%", hub.get("status", "unknown"))
+    with u2:
+        external = hub.get("external_data", {})
+        st.metric("Real APIs", f"{external.get('connected', 0)}/{external.get('total', 0)}", external.get("mode", "demo"))
+    with u3:
+        readiness = hub.get("readiness", {})
+        st.metric("Deployment", f"{readiness.get('score', 0)}%", readiness.get("band", "unknown"))
+    with u4:
+        reliability = hub.get("reliability", {})
+        st.metric("Reliability", f"{reliability.get('score', 0)}%", reliability.get("band", "unknown"))
+
+    st.info(hub.get("summary", "Upgrade hub is active."))
+    module_rows = pd.DataFrame(hub.get("modules", []))
+    if not module_rows.empty:
+        st.markdown("#### Big Upgrade Roadmap")
+        st.dataframe(module_rows, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Sea-Lane Decision Engine")
+    route_col1, route_col2, route_col3, route_col4 = st.columns(4)
+    with route_col1:
+        route_origin = st.text_input("Origin port", value="Mumbai", key="upgrade_route_origin")
+    with route_col2:
+        route_destination = st.text_input("Destination port", value="Rotterdam", key="upgrade_route_destination")
+    with route_col3:
+        objective = st.selectbox("Objective", ["safest", "balanced", "fastest", "lowest_cost"], key="upgrade_route_objective")
+    with route_col4:
+        cargo_priority = st.selectbox("Cargo priority", ["P1", "P2", "P3"], index=1, key="upgrade_route_priority")
+    avoid = st.text_input("Avoid zones / risks", value="war,piracy,security,geopolitical", key="upgrade_route_avoid")
+    try:
+        engine = api_get(
+            f"/routes/sea-lane-engine?origin={quote(route_origin)}&destination={quote(route_destination)}"
+            f"&objective={quote(objective)}&cargo_priority={quote(cargo_priority)}&avoid={quote(avoid)}",
+            fresh=True,
+        )
+        recommended = engine.get("recommended") or {}
+        if recommended:
+            st.success(
+                f"Recommended: {recommended.get('name')} | risk {recommended.get('risk_score')}/10 | "
+                f"{recommended.get('distance_nm')} nm | rule: {recommended.get('captain_rule')}"
+            )
+        option_rows = pd.DataFrame(engine.get("options", []))
+        if not option_rows.empty:
+            display_columns = [
+                column for column in [
+                    "name",
+                    "risk_score",
+                    "risk_band",
+                    "distance_nm",
+                    "detour_ratio",
+                    "objective_score",
+                    "avoid_penalty",
+                    "captain_rule",
+                    "recommended",
+                ]
+                if column in option_rows.columns
+            ]
+            st.dataframe(option_rows[display_columns], use_container_width=True, hide_index=True)
+        st.caption(engine.get("decision_note", "Sea-lane engine returned no note."))
+    except Exception as e:
+        st.warning(f"Sea-lane engine could not calculate this route yet: {e}")
+
+    st.markdown("#### Live Alert Delivery Plan")
+    d1, d2 = st.columns([0.65, 0.35])
+    with d1:
+        channels = pd.DataFrame(delivery.get("channels", []))
+        if not channels.empty:
+            st.dataframe(channels, use_container_width=True, hide_index=True)
+    with d2:
+        st.metric("Critical Items", delivery.get("notification_count", 0))
+        st.write(" -> ".join(delivery.get("recommended_sequence", [])))
+        st.caption("Alert rule: " + " ".join(delivery.get("rules", [])[:1]))
+
+    next_steps = pd.DataFrame({"Next best step": hub.get("next_best_steps", [])})
+    if not next_steps.empty:
+        st.markdown("#### Final Production Steps")
+        st.dataframe(next_steps, use_container_width=True, hide_index=True)
+
+
 def show_settings():
     st.title("Settings")
     try:
@@ -7164,12 +8202,15 @@ def show_settings():
     setting_options = (
         ["Account", "Interface"]
         if is_read_only_access()
-        else ["Setup", "Account", "Users", "Delivery", "Security", "Database", "External Data", "Runtime", "Interface", "AIS", "Providers", "Data", "Deployment"]
+        else ["Setup", "Upgrade Hub", "Account", "Users", "Delivery", "Security", "Database", "External Data", "Runtime", "Interface", "AIS", "Providers", "Data", "Deployment"]
     )
     section = render_workspace_switch("Settings panel", setting_options, "settings_panel")
 
     if section == "Setup":
         show_setup_checklist_panel()
+
+    elif section == "Upgrade Hub":
+        show_upgrade_hub_panel()
 
     elif section == "Account":
         st.markdown("### Account Control")
@@ -7944,10 +8985,16 @@ def show_smart_operations_inbox():
 
 def show_command_center_hub():
     st.title("Command Center")
-    st.caption("One focused command brain for executive overview, autonomous intervention planning, and audited command actions.")
-    section = render_workspace_switch("Command workspace", ["AI Captain", "Voyage Control Tower", "Smart Inbox", "Executive Command", "Strategic Autopilot"], "command_center_section")
+    st.caption("One focused command brain for AI verdicts, problem solving, live control, inbox pressure, and audited command actions.")
+    section = render_workspace_switch(
+        "Command workspace",
+        ["AI Captain", "Problem Solver", "Voyage Control Tower", "Smart Inbox", "Executive Command", "Strategic Autopilot"],
+        "command_center_section",
+    )
     if section == "AI Captain":
         show_ai_captain()
+    elif section == "Problem Solver":
+        show_command_copilot()
     elif section == "Voyage Control Tower":
         show_voyage_control_tower()
     elif section == "Smart Inbox":
@@ -7960,7 +9007,6 @@ def show_command_center_hub():
 
 pages = {
     "Command Center": show_command_center_hub,
-    "Command Copilot": show_command_copilot,
     "Fleet & Operations": show_fleet_operations_hub,
     "Scenario Lab": show_scenario_lab,
     "Risk & Alerts": show_risk_alerts_hub,
@@ -7970,8 +9016,8 @@ pages = {
 
 
 ROLE_PAGE_ACCESS = {
-    "Admin": ["Dashboard", "Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
-    "Operator": ["Dashboard", "Command Center", "Command Copilot", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
+    "Admin": ["Dashboard", "Command Center", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
+    "Operator": ["Dashboard", "Command Center", "Fleet & Operations", "Risk & Alerts", "Scenario Lab", "Reports"],
     "Public": ["Dashboard"],
 }
 
@@ -8024,15 +9070,14 @@ def main():
     st.sidebar.markdown(
         """
         <div class="sidebar-brand">
-            <b>Global AI Trade Intelligence</b>
-            <span>Final submission command build</span>
+            <b>Maritime AI Command</b>
+            <span>Live routes, vessels, risk, and cargo</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
     allowed_pages = pages_for_current_role()
-    st.sidebar.caption("Core role sections only. Notifications and Settings live in the top icons.")
-    st.sidebar.markdown("### Access")
+    st.sidebar.caption("Clean mode: main sections only. Alerts and Settings stay in the top bar.")
     st.sidebar.caption(f"{current_role()} | {auth_status_label()} | {st.session_state.auth_provider}")
     if st.sidebar.button("Security / Sign in", use_container_width=True, icon=":material/admin_panel_settings:"):
         st.session_state.utility_page = "Settings"
@@ -8046,7 +9091,7 @@ def main():
         if isinstance(aisstream, dict) and aisstream.get("connected"):
             st.sidebar.success(f"AISStream connected: {aisstream.get('vessel_count', 0)} vessels")
         else:
-            st.sidebar.warning("AISStream waiting; demo fallback available")
+            st.sidebar.caption("AISStream fallback mode")
         critical_notifications = sum(1 for item in notifications if item.get("severity") == "critical")
         st.sidebar.caption(f"{len(notifications)} notifications | {critical_notifications} critical")
     except Exception:
@@ -8056,13 +9101,8 @@ def main():
         st.session_state.selected_page = next(iter(allowed_pages))
     page = st.sidebar.selectbox("Main Section", list(allowed_pages.keys()), key="selected_page", on_change=close_utility_page)
     render_top_utility_bar(notifications, health)
-    utility_page = st.session_state.get("utility_page")
-    if utility_page == "Notifications":
-        show_notifications()
-    elif utility_page == "Settings":
-        show_settings()
-    else:
-        allowed_pages[page]()
+
+    allowed_pages[page]()
 
     # Footer
     st.markdown("""
