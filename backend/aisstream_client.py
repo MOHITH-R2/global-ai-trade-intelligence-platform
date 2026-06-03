@@ -101,8 +101,71 @@ def _project_position(lat: float, lon: float, heading: float, nautical_miles: fl
     return lat + lat_delta, lon + lon_delta
 
 
+def _geo_distance_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius_nm = 3440.065
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return radius_nm * (2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a))))
+
+
+def _bearing_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_lambda = math.radians(lon2 - lon1)
+    y = math.sin(delta_lambda) * math.cos(phi2)
+    x = (math.cos(phi1) * math.sin(phi2)) - (
+        math.sin(phi1) * math.cos(phi2) * math.cos(delta_lambda)
+    )
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _exaggerated_motion_allowed() -> bool:
+    return os.getenv("AISSTREAM_DEMO_EXAGGERATED_MOTION", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _map_motion_multiplier() -> float:
-    return max(1.0, min(5000.0, _number(os.getenv("AISSTREAM_MAP_MOTION_MULTIPLIER"), 1200.0) or 1200.0))
+    default_multiplier = 90.0
+    raw_value = _number(os.getenv("AISSTREAM_MAP_MOTION_MULTIPLIER"), default_multiplier) or default_multiplier
+    max_multiplier = 5000.0 if _exaggerated_motion_allowed() else 220.0
+    return max(1.0, min(max_multiplier, raw_value))
+
+
+def _motion_window_seconds() -> float:
+    value = _number(os.getenv("AISSTREAM_MOTION_WINDOW_SECONDS"), 90.0) or 90.0
+    return max(10.0, min(240.0, value))
+
+
+def _max_projected_nm() -> float:
+    value = _number(os.getenv("AISSTREAM_MAX_PROJECTED_NM"), 35.0) or 35.0
+    return max(1.0, min(140.0, value))
+
+
+def _clean_track(track: Any, lon: float, lat: float, display_lon: float, display_lat: float) -> list[list[float]]:
+    rows: list[list[float]] = []
+    if isinstance(track, list):
+        for point in track[-7:]:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            point_lon = _number(point[0])
+            point_lat = _number(point[1])
+            if point_lat is None or point_lon is None:
+                continue
+            rows.append([round(point_lon, 5), round(point_lat, 5)])
+
+    current = [round(lon, 5), round(lat, 5)]
+    if not rows or rows[-1] != current:
+        rows.append(current)
+
+    display = [round(display_lon, 5), round(display_lat, 5)]
+    if rows[-1] != display:
+        rows.append(display)
+    return rows[-8:]
 
 
 def _project_api_display_position(row: dict[str, Any], now: datetime.datetime) -> dict[str, Any]:
@@ -111,19 +174,30 @@ def _project_api_display_position(row: dict[str, Any], now: datetime.datetime) -
     speed = max(0.0, _number(row.get("speed_knots"), 0.0) or 0.0)
     heading = _number(row.get("heading"), _number(row.get("cog"), 0.0)) or 0.0
     last_epoch = _number(row.get("_last_signal_epoch"), now.timestamp())
+    prev_lat = _number(row.get("previous_position_lat"))
+    prev_lon = _number(row.get("previous_position_lon"))
     if lat is None or lon is None:
         return row
 
     age_seconds = max(0.0, now.timestamp() - float(last_epoch or now.timestamp()))
-    visual_seconds = (age_seconds % 120.0) + (now.timestamp() % 12.0)
-    projected_nm = min(220.0, speed * (visual_seconds / 3600.0) * _map_motion_multiplier())
+    source_heading = heading
+    api_step_nm = 0.0
+    if prev_lat is not None and prev_lon is not None:
+        api_step_nm = _geo_distance_nm(prev_lat, prev_lon, lat, lon)
+        if api_step_nm >= 0.03:
+            source_heading = _bearing_between(prev_lat, prev_lon, lat, lon)
+
+    projected_seconds = min(age_seconds, _motion_window_seconds())
+    real_nm = speed * (projected_seconds / 3600.0)
+    projected_nm = min(_max_projected_nm(), real_nm * _map_motion_multiplier())
     if speed <= 0.5 or projected_nm <= 0.02:
         display_lat, display_lon = lat, lon
     else:
-        display_lat, display_lon = _project_position(lat, lon, heading, projected_nm)
+        display_lat, display_lon = _project_position(lat, lon, source_heading, projected_nm)
         display_lat = max(-89.9, min(89.9, display_lat))
         display_lon = ((display_lon + 180) % 360) - 180
 
+    track = _clean_track(row.get("api_track"), lon, lat, display_lon, display_lat)
     row.update({
         "api_position_lat": round(lat, 5),
         "api_position_lon": round(lon, 5),
@@ -131,8 +205,13 @@ def _project_api_display_position(row: dict[str, Any], now: datetime.datetime) -
         "display_position_lon": round(display_lon, 5),
         "motion_age_seconds": round(age_seconds, 1),
         "motion_projected_nm": round(projected_nm, 2),
-        "motion_source": "AISStream API projected from heading, speed, and signal age",
-        "motion_trail": [[round(lon, 5), round(lat, 5)], [round(display_lon, 5), round(display_lat, 5)]],
+        "motion_real_nm": round(real_nm, 3),
+        "motion_multiplier": round(_map_motion_multiplier(), 1),
+        "motion_quality": "api-track" if api_step_nm >= 0.03 else "api-heading",
+        "motion_source": "AISStream API speed, heading, signal age, and previous API track",
+        "motion_trail": track,
+        "api_track": track[:-1] if track[-1] != [round(lon, 5), round(lat, 5)] else track,
+        "course_heading": round(source_heading, 1),
     })
     return row
 
@@ -210,6 +289,20 @@ def _handle_position_report(message: dict[str, Any]):
     now = _utc_now()
     with AISSTREAM_LOCK:
         existing = AISSTREAM_STATE["vessels"].get(mmsi, {})
+        previous_lat = _number(existing.get("position_lat"))
+        previous_lon = _number(existing.get("position_lon"))
+        existing_track = existing.get("api_track", [])
+        api_track = []
+        if isinstance(existing_track, list):
+            api_track = [
+                [round(_number(point[0], 0) or 0, 5), round(_number(point[1], 0) or 0, 5)]
+                for point in existing_track
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ][-7:]
+        current_track_point = [round(lon, 5), round(lat, 5)]
+        if not api_track or api_track[-1] != current_track_point:
+            api_track.append(current_track_point)
+        api_track = api_track[-8:]
         name = _text(metadata.get("ShipName"), metadata.get("Name"), existing.get("name"), f"MMSI {mmsi}")
         destination = _text(metadata.get("Destination"), metadata.get("DEST"), existing.get("ais_destination"))
         speed = _number(body.get("Sog"), _number(metadata.get("Sog"), existing.get("speed_knots", 0))) or 0
@@ -228,6 +321,8 @@ def _handle_position_report(message: dict[str, Any]):
             "name": name,
             "position_lat": round(lat, 5),
             "position_lon": round(lon, 5),
+            "previous_position_lat": round(previous_lat, 5) if previous_lat is not None else round(lat, 5),
+            "previous_position_lon": round(previous_lon, 5) if previous_lon is not None else round(lon, 5),
             "status": "active",
             "route": f"{origin_port} AIS corridor",
             "origin_port": origin_port,
@@ -248,8 +343,11 @@ def _handle_position_report(message: dict[str, Any]):
             "eta_hours": None,
             "heading": round(heading, 1),
             "last_signal_at": now.isoformat(),
+            "previous_signal_at": existing.get("last_signal_at"),
             "source": "AISStream",
+            "api_track": api_track,
             "_last_signal_epoch": now.timestamp(),
+            "_previous_signal_epoch": existing.get("_last_signal_epoch"),
         }
         AISSTREAM_STATE["last_message_at"] = now.isoformat()
         _trim_cache_locked()
@@ -359,4 +457,8 @@ def get_aisstream_status():
             "last_error": AISSTREAM_STATE["last_error"],
             "bounding_boxes": boxes,
             "ssl_verification": "disabled-local-demo" if insecure_ssl_allowed() else "enabled",
+            "map_motion_multiplier": _map_motion_multiplier(),
+            "motion_window_seconds": _motion_window_seconds(),
+            "max_projected_nm": _max_projected_nm(),
+            "motion_mode": "demo-exaggerated" if _exaggerated_motion_allowed() else "realistic-api-projection",
         }

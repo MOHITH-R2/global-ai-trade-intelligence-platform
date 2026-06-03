@@ -47,6 +47,8 @@ def api_cache_ttl(path):
         return 18 if bool(st.session_state.get("mobile_performance_mode", False)) else 12
     if path.startswith(("/weather/maritime", "/ports/congestion")):
         return 90 if bool(st.session_state.get("mobile_performance_mode", False)) else 45
+    if path.startswith("/ai/live"):
+        return 8 if bool(st.session_state.get("mobile_performance_mode", False)) else 4
     heavy_live_paths = (
         "/ai/captain",
         "/ai/risk-intelligence",
@@ -55,7 +57,6 @@ def api_cache_ttl(path):
         "/operations/inbox",
     )
     live_paths = (
-        "/ai/live",
         "/ai/mission-map-overlay",
         "/ai/incident-predictions",
         "/vessels/live",
@@ -624,63 +625,63 @@ def render_top_utility_bar(notifications=None, health=None):
         """
 <style>
 .app-topbar-anchor {
-    margin-top: -2rem;
+    margin-top: -1.1rem;
 }
 .topbar-glass {
-    background: rgba(15, 23, 42, 0.65);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(56, 189, 248, 0.2);
-    border-radius: 12px;
-    padding: 0.6rem 1rem;
+    background: rgba(15, 23, 42, 0.78);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 0.58rem 0.78rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3), inset 0 0 15px rgba(56, 189, 248, 0.1);
-    margin-bottom: 1rem;
+    box-shadow: none;
+    margin-bottom: 0.75rem;
 }
 .topbar-branding {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.75rem;
+    flex-wrap: wrap;
 }
 .topbar-pill-status {
-    background: rgba(16, 185, 129, 0.2);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.4);
+    background: rgba(20, 184, 166, 0.14);
+    color: #99f6e4;
+    border: 1px solid rgba(45, 212, 191, 0.34);
     padding: 2px 10px;
-    border-radius: 99px;
+    border-radius: 6px;
     font-size: 0.75rem;
     font-weight: 800;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+    letter-spacing: 0;
+    box-shadow: none;
 }
 .topbar-pill-offline {
-    background: rgba(239, 68, 68, 0.2);
+    background: rgba(239, 68, 68, 0.12);
     color: #f87171;
     border: 1px solid rgba(239, 68, 68, 0.4);
     padding: 2px 10px;
-    border-radius: 99px;
+    border-radius: 6px;
     font-size: 0.75rem;
     font-weight: 800;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    box-shadow: 0 0 10px rgba(239, 68, 68, 0.2);
+    letter-spacing: 0;
+    box-shadow: none;
 }
 .topbar-title {
-    font-size: 1.1rem;
+    font-size: 1rem;
     font-weight: 800;
-    color: #e0f2fe;
-    letter-spacing: 0.05em;
-    text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+    color: #f8fafc;
+    letter-spacing: 0;
+    text-shadow: none;
 }
 .topbar-meta {
     color: #94a3b8;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     display: flex;
-    gap: 0.75rem;
+    gap: 0.48rem;
     align-items: center;
+    flex-wrap: wrap;
 }
 .meta-divider {
     color: rgba(148, 163, 184, 0.3);
@@ -2680,6 +2681,189 @@ def _apply_global_styles():
             border-top: 1px solid rgba(148, 163, 184, 0.12);
             padding-top: 1rem;
         }
+        /* Submission polish: calmer, sharper operational UI */
+        .stApp {
+            background:
+                linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+                linear-gradient(135deg, #06111f 0%, #101923 54%, #141827 100%) !important;
+            background-size: 40px 40px, 40px 40px, auto !important;
+        }
+        .stApp::before,
+        .dashboard-hero::after,
+        .captain-hero::after,
+        .tower-hero::after,
+        .login-shell::before {
+            display: none !important;
+        }
+        .block-container {
+            max-width: 1360px !important;
+            padding-top: 0.85rem !important;
+        }
+        h1, h2, h3 {
+            letter-spacing: 0 !important;
+            text-shadow: none !important;
+        }
+        h1 {
+            font-size: 1.9rem !important;
+            font-weight: 820 !important;
+            margin-bottom: 0.45rem !important;
+        }
+        h2 {
+            font-size: 1.35rem !important;
+        }
+        h3 {
+            font-size: 1.08rem !important;
+        }
+        [data-testid="stSidebar"] {
+            background: #07111f !important;
+            border-right: 1px solid rgba(148, 163, 184, 0.18) !important;
+            box-shadow: none !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+        [data-testid="stSidebar"] label {
+            color: rgba(226, 232, 240, 0.78) !important;
+        }
+        [data-testid="stAlert"] {
+            border-radius: 8px !important;
+            border: 1px solid rgba(148, 163, 184, 0.18) !important;
+            box-shadow: none !important;
+        }
+        [data-testid="stVerticalBlock"] {
+            gap: 0.72rem !important;
+        }
+        .sidebar-brand,
+        .topbar-card,
+        .topbar-glass,
+        [data-testid="stMetric"],
+        [data-testid="stExpander"],
+        [data-testid="stDataFrame"],
+        iframe,
+        .dashboard-hero,
+        .captain-hero,
+        .tower-hero,
+        .security-card,
+        .metric-card,
+        .utility-panel,
+        .notification-card,
+        .inbox-card,
+        .settings-band,
+        .solver-hero,
+        .solver-answer,
+        .action-step,
+        .mission-card,
+        .incident-card,
+        .vessel-intel-card,
+        .tower-decision,
+        .tower-plan-card,
+        .captain-order-card,
+        .login-panel,
+        .login-kpi,
+        .login-choice,
+        .role-entry-card,
+        .form-container,
+        .settings-band-new,
+        .fleet-map {
+            border-radius: 8px !important;
+            box-shadow: none !important;
+        }
+        .dashboard-hero,
+        .captain-hero,
+        .tower-hero,
+        .security-card,
+        .inbox-card,
+        .solver-hero,
+        .mission-card,
+        .vessel-intel-card,
+        .login-panel,
+        .role-entry-card,
+        .form-container {
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.86), rgba(8, 47, 73, 0.5)) !important;
+            border-color: rgba(148, 163, 184, 0.2) !important;
+        }
+        .topbar-glass,
+        .topbar-card,
+        .settings-band,
+        .settings-band-new,
+        .utility-panel {
+            background: rgba(15, 23, 42, 0.66) !important;
+            border-color: rgba(148, 163, 184, 0.2) !important;
+        }
+        [data-testid="stMetric"] {
+            background: rgba(15, 23, 42, 0.62) !important;
+            border-color: rgba(148, 163, 184, 0.18) !important;
+            padding: 0.65rem 0.7rem !important;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 0.76rem !important;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 1.38rem !important;
+            line-height: 1.15 !important;
+        }
+        .stButton > button {
+            border-radius: 8px !important;
+            min-height: 2.3rem !important;
+            box-shadow: none !important;
+            background: rgba(15, 23, 42, 0.72) !important;
+            border: 1px solid rgba(125, 211, 252, 0.28) !important;
+        }
+        .stButton > button:hover {
+            transform: none !important;
+            border-color: rgba(45, 212, 191, 0.7) !important;
+            background: rgba(8, 47, 73, 0.76) !important;
+            box-shadow: none !important;
+        }
+        [data-baseweb="tab"] {
+            border-radius: 8px 8px 0 0 !important;
+            letter-spacing: 0 !important;
+        }
+        [data-testid="stSegmentedControl"] label {
+            border-radius: 8px !important;
+            min-height: 2.15rem !important;
+        }
+        [data-testid="stSegmentedControl"] label[data-baseweb="radio"] {
+            background: rgba(15, 23, 42, 0.58) !important;
+            border: 1px solid rgba(148, 163, 184, 0.18) !important;
+        }
+        [data-baseweb="input"] > div,
+        [data-baseweb="select"] > div,
+        textarea {
+            border-radius: 8px !important;
+            background-color: rgba(15, 23, 42, 0.7) !important;
+        }
+        .topbar-pill,
+        .security-pill,
+        .severity-chip,
+        .hero-kicker,
+        .captain-badge,
+        .tower-badge,
+        .solver-chip,
+        .login-badge,
+        .login-badge-new,
+        .role-kicker,
+        .login-status-pill {
+            border-radius: 6px !important;
+            letter-spacing: 0 !important;
+        }
+        .dashboard-hero h2,
+        .captain-hero h2,
+        .tower-hero h2 {
+            font-size: 1.75rem !important;
+            letter-spacing: 0 !important;
+        }
+        .dashboard-hero p,
+        .captain-hero p,
+        .tower-hero p {
+            max-width: 980px !important;
+            color: rgba(226, 232, 240, 0.82) !important;
+        }
+        .mission-score {
+            font-size: 1.45rem !important;
+        }
+        .footer {
+            margin-top: 1.4rem !important;
+        }
         .sidebar .sidebar-content {
             background-color: transparent;
         }
@@ -2713,6 +2897,17 @@ def _apply_global_styles():
             }
             .login-choice, .utility-panel, .settings-band, .notification-card {
                 padding: 0.7rem;
+            }
+            .topbar-glass {
+                padding: 0.55rem 0.65rem;
+            }
+            .topbar-title {
+                width: 100%;
+                font-size: 0.95rem;
+            }
+            .topbar-meta {
+                font-size: 0.76rem;
+                gap: 0.35rem;
             }
             .login-panel {
                 padding: 0.75rem;
@@ -3303,7 +3498,7 @@ def render_fleet_live_map_panel(vessels, routes, selected_name, map_height, weat
 
 
 if hasattr(st, "fragment"):
-    render_fleet_live_map_panel = st.fragment(run_every="8s")(render_fleet_live_map_panel)
+    render_fleet_live_map_panel = st.fragment(run_every="5s")(render_fleet_live_map_panel)
 
 
 def fleet_port_workload_rows(vessels):
@@ -4769,7 +4964,7 @@ def render_mission_overlay(overlay):
 
 
 if hasattr(st, "fragment"):
-    render_dashboard_trade_pulse_map = st.fragment(run_every="8s")(render_dashboard_trade_pulse_map)
+    render_dashboard_trade_pulse_map = st.fragment(run_every="5s")(render_dashboard_trade_pulse_map)
 
 
 def show_global_dashboard():
@@ -6951,97 +7146,89 @@ def show_command_copilot():
         """
 <style>
 .copilot-header {
-    background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(15, 23, 42, 0.8));
-    border: 1px solid rgba(56, 189, 248, 0.3);
-    border-radius: 16px;
-    padding: 2rem;
-    margin-bottom: 2rem;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2), inset 0 0 20px rgba(56, 189, 248, 0.1);
+    background: rgba(15, 23, 42, 0.74);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 8px;
+    padding: 1.08rem;
+    margin-bottom: 1rem;
+    box-shadow: none;
     position: relative;
     overflow: hidden;
 }
 .copilot-header::before {
-    content: '';
-    position: absolute;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: radial-gradient(circle, rgba(56, 189, 248, 0.1) 0%, transparent 60%);
-    animation: rotate 20s linear infinite;
-    z-index: 0;
+    display: none;
 }
 .copilot-header > div {
     position: relative;
     z-index: 1;
 }
 .copilot-title {
-    font-size: 2.5rem;
-    font-weight: 900;
-    color: #e0f2fe;
-    text-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
-    margin-bottom: 0.5rem;
-    letter-spacing: 1px;
+    font-size: 1.65rem;
+    font-weight: 820;
+    color: #f8fafc;
+    text-shadow: none;
+    margin-bottom: 0.35rem;
+    letter-spacing: 0;
 }
 .copilot-subtitle {
-    color: #bae6fd;
-    font-size: 1.1rem;
-    line-height: 1.6;
+    color: #cbd5e1;
+    font-size: 0.98rem;
+    line-height: 1.5;
 }
 .solver-hero {
-    background: rgba(2, 6, 23, 0.6);
-    border-left: 4px solid #38bdf8;
-    padding: 1rem 1.5rem;
-    border-radius: 0 8px 8px 0;
-    margin-top: 1.5rem;
+    background: rgba(15, 23, 42, 0.58);
+    border-left: 3px solid #14b8a6;
+    padding: 0.78rem 0.9rem;
+    border-radius: 8px;
+    margin-top: 0.85rem;
 }
 .solver-hero b {
-    color: #38bdf8;
+    color: #99f6e4;
     display: block;
     margin-bottom: 0.25rem;
-    font-size: 1.1rem;
+    font-size: 1rem;
 }
 .solver-hero span {
     color: #94a3b8;
 }
 .action-step {
     background: rgba(15, 23, 42, 0.5);
-    border: 1px solid rgba(56, 189, 248, 0.2);
+    border: 1px solid rgba(148, 163, 184, 0.18);
     border-radius: 8px;
-    padding: 1rem;
-    margin-bottom: 0.75rem;
+    padding: 0.72rem;
+    margin-bottom: 0.58rem;
     color: #e2e8f0;
 }
 .action-step b {
-    color: #38bdf8;
+    color: #99f6e4;
     margin-right: 0.5rem;
 }
 .solver-answer {
-    background: rgba(2, 6, 23, 0.7);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin: 1.5rem 0;
-    box-shadow: inset 0 0 20px rgba(16, 185, 129, 0.05);
+    background: rgba(15, 23, 42, 0.68);
+    border: 1px solid rgba(45, 212, 191, 0.28);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    box-shadow: none;
 }
 .solver-chip {
     display: inline-block;
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
-    padding: 0.25rem 0.75rem;
-    border-radius: 99px;
+    background: rgba(20, 184, 166, 0.14);
+    color: #99f6e4;
+    padding: 0.22rem 0.62rem;
+    border-radius: 6px;
     font-size: 0.75rem;
     font-weight: bold;
     text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 1rem;
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    letter-spacing: 0;
+    margin-bottom: 0.65rem;
+    border: 1px solid rgba(45, 212, 191, 0.28);
 }
 .solver-answer h3 {
     color: #f8fafc;
     margin: 0;
-    font-size: 1.4rem;
-    line-height: 1.5;
+    font-size: 1.08rem;
+    line-height: 1.45;
 }
 </style>
 <div class="copilot-header">
@@ -7694,7 +7881,7 @@ def render_login_gate(auth_meta):
         .login-status-pill.ok { border-color: rgba(45, 212, 191, 0.34); }
         .login-status-pill.warn { border-color: rgba(250, 204, 21, 0.42); }
         .login-status-pill.bad { border-color: rgba(248, 113, 113, 0.46); }
-        .role-entry-card { min-height: 214px; background: rgba(15, 23, 42, 0.68); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; padding: 1rem; box-shadow: 0 16px 38px rgba(2, 6, 23, 0.22); }
+        .role-entry-card { min-height: 214px; background: rgba(15, 23, 42, 0.68); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; padding: 1rem; box-shadow: none; }
         .role-kicker { color: #99f6e4; font-size: 0.75rem; font-weight: 850; letter-spacing: 0; text-transform: uppercase; }
         .role-entry-card h3 { color: #f8fafc; margin: 0.42rem 0; font-size: 1.22rem; }
         .role-entry-card p { color: #cbd5e1; margin: 0.2rem 0 0.8rem; line-height: 1.45; min-height: 66px; }
@@ -7702,7 +7889,7 @@ def render_login_gate(auth_meta):
         .login-note { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.25); color: #bbf7d0; border-radius: 8px; padding: 0.78rem 0.88rem; margin: 0.95rem 0; }
         .settings-band-new { background: rgba(34, 211, 238, 0.05); border-left: 4px solid #22d3ee; padding: 1rem 1.25rem; border-radius: 0 8px 8px 0; margin: 1.5rem 0; color: #e2e8f0; }
         .settings-band-new b { color: #22d3ee; }
-        .form-container { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 8px; padding: 1.25rem; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2); }
+        .form-container { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 8px; padding: 1.25rem; box-shadow: none; }
         @media (max-width: 760px) {
             .login-title-new { font-size: 1.9rem; }
             .login-status-row { grid-template-columns: 1fr; }

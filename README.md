@@ -124,12 +124,14 @@ To use real vessel positions, put your AISStream key in `.env`:
 AIS_PROVIDER=aisstream
 AISSTREAM_API_KEY=your_aisstream_key
 AISSTREAM_MAX_VESSELS=12
-AISSTREAM_MAP_MOTION_MULTIPLIER=1200
+AISSTREAM_MAP_MOTION_MULTIPLIER=90
+AISSTREAM_MOTION_WINDOW_SECONDS=90
+AISSTREAM_MAX_PROJECTED_NM=35
 ```
 
 The backend connects to `wss://stream.aisstream.io/v0/stream`, caches recent vessel positions, and serves them through `/ai/live` and `/vessels/live`. Dashboard, Fleet Map, Mission Brief, System Health, Reports, Threat Center, and operations analytics prefer AISStream data when available, then fall back to the local fleet registry without exposing the API key to the browser. Live AIS cargo is labeled as `Inferred Demo Cargo` unless an operator-managed cargo manifest matches the vessel, in which case it becomes `Verified Manifest`.
 
-Map ship movement is API-driven: the backend keeps the true AIS `position_lat/position_lon`, then adds `display_position_lat/display_position_lon`, `motion_trail`, and `motion_source` so maps can visibly project moving vessels from AIS heading, speed, and signal age between real API messages. Lower `AISSTREAM_MAP_MOTION_MULTIPLIER` for more realistic/slower movement or raise it for a stronger demo effect.
+Map ship movement is API-driven: the backend keeps the true AIS `position_lat/position_lon`, then adds `display_position_lat/display_position_lon`, `motion_trail`, `api_track`, `motion_projected_nm`, and `motion_source` so maps can visibly project moving vessels from AIS heading, speed, signal age, and previous API positions between real messages. Lower `AISSTREAM_MAP_MOTION_MULTIPLIER` for slower movement, raise it only for a stronger classroom demo, and use `AISSTREAM_MAX_PROJECTED_NM` to prevent unrealistic map jumps.
 
 If AISStream's websocket certificate verification fails in a local demo, set `AISSTREAM_ALLOW_INSECURE_SSL=true` in `.env`. Keep that disabled for production.
 
