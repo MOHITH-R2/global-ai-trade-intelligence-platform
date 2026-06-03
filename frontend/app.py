@@ -18,8 +18,19 @@ API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 API_TIMEOUT = 8
 STATUS_TIMEOUT = 1.5
 MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+PROJECT_TITLE = "Global AI Trade Intelligence Platform"
+PROJECT_SUBTITLE = "AI maritime risk, route, cargo, and fleet command center"
 HTTP = requests.Session()
 SESSION_QUERY_PARAM = "session_token"
+
+SECTION_SUMMARIES = {
+    "Dashboard": "mission overview, route pressure, live/fallback vessels, alerts, and readiness",
+    "Command Center": "AI Captain, problem solver, control tower, smart inbox, and strategic decisions",
+    "Fleet & Operations": "vessel tracking, AIS movement, cargo exposure, operations, and ETA prediction",
+    "Risk & Alerts": "risk levels, threat alerts, forecasts, incidents, and defensive playbooks",
+    "Scenario Lab": "digital twin simulations for storms, piracy, port shutdowns, cyber, fuel, and cargo risks",
+    "Reports": "PDF exports, smart briefs, report history, and project intelligence summaries",
+}
 
 PORT_COORDS = {
     "Shanghai": (31.2304, 121.4737),
@@ -39,7 +50,7 @@ MARITIME_WATCH_ZONES = [
 
 
 def _configure_page():
-    st.set_page_config(page_title="Global AI Trade Intelligence Platform", layout="wide", page_icon="ship")
+    st.set_page_config(page_title=PROJECT_TITLE, layout="wide", page_icon="ship")
 
 
 def api_cache_ttl(path):
@@ -674,6 +685,18 @@ def render_top_utility_bar(notifications=None, health=None):
     color: #f8fafc;
     letter-spacing: 0;
     text-shadow: none;
+    line-height: 1.2;
+}
+.topbar-title-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.08rem;
+    min-width: 15rem;
+}
+.topbar-subtitle {
+    color: rgba(226, 232, 240, 0.68);
+    font-size: 0.76rem;
+    line-height: 1.2;
 }
 .topbar-meta {
     color: #94a3b8;
@@ -701,7 +724,10 @@ def render_top_utility_bar(notifications=None, health=None):
 <div class="topbar-glass">
 <div class="topbar-branding">
 <span class="{status_class}">{safe_html(api_status)}</span>
-<span class="topbar-title">MARITIME COMMAND OS</span>
+<span class="topbar-title-stack">
+    <span class="topbar-title">{safe_html(PROJECT_TITLE)}</span>
+    <span class="topbar-subtitle">{safe_html(PROJECT_SUBTITLE)}</span>
+</span>
 <div class="topbar-meta">
 <span class="meta-divider">|</span>
 <span style="color: #38bdf8; font-weight: 600;">{safe_html(current_role())}</span>
@@ -2715,6 +2741,54 @@ def _apply_global_styles():
         h3 {
             font-size: 1.08rem !important;
         }
+        .project-identity {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 1rem;
+            border: 1px solid rgba(45, 212, 191, 0.24);
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(8, 47, 73, 0.55));
+            border-radius: 8px;
+            padding: 1rem 1.1rem;
+            margin: 0.2rem 0 0.9rem 0;
+        }
+        .project-identity h1 {
+            margin: 0.18rem 0 0.24rem 0 !important;
+            font-size: 1.72rem !important;
+            line-height: 1.15 !important;
+            color: #f8fafc !important;
+        }
+        .project-identity p {
+            margin: 0 !important;
+            color: rgba(226, 232, 240, 0.78);
+            line-height: 1.45;
+        }
+        .project-kicker {
+            display: inline-flex;
+            width: fit-content;
+            border-radius: 6px;
+            padding: 0.14rem 0.48rem;
+            color: #99f6e4;
+            border: 1px solid rgba(45, 212, 191, 0.3);
+            background: rgba(20, 184, 166, 0.12);
+            font-size: 0.73rem;
+            font-weight: 850;
+            text-transform: uppercase;
+            letter-spacing: 0;
+        }
+        .project-section-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 8rem;
+            border-radius: 8px;
+            padding: 0.7rem 0.85rem;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: rgba(2, 6, 23, 0.28);
+            color: #e2e8f0;
+            text-align: center;
+            font-weight: 780;
+        }
         [data-testid="stSidebar"] {
             background: #07111f !important;
             border-right: 1px solid rgba(148, 163, 184, 0.18) !important;
@@ -2732,9 +2806,14 @@ def _apply_global_styles():
         [data-testid="stVerticalBlock"] {
             gap: 0.72rem !important;
         }
+        div[data-testid="stHorizontalBlock"] {
+            align-items: stretch !important;
+        }
         .sidebar-brand,
         .topbar-card,
         .topbar-glass,
+        .project-identity,
+        .project-section-chip,
         [data-testid="stMetric"],
         [data-testid="stExpander"],
         [data-testid="stDataFrame"],
@@ -2793,6 +2872,7 @@ def _apply_global_styles():
             background: rgba(15, 23, 42, 0.62) !important;
             border-color: rgba(148, 163, 184, 0.18) !important;
             padding: 0.65rem 0.7rem !important;
+            height: 100% !important;
         }
         [data-testid="stMetricLabel"] {
             font-size: 0.76rem !important;
@@ -2807,6 +2887,8 @@ def _apply_global_styles():
             box-shadow: none !important;
             background: rgba(15, 23, 42, 0.72) !important;
             border: 1px solid rgba(125, 211, 252, 0.28) !important;
+            justify-content: center !important;
+            white-space: normal !important;
         }
         .stButton > button:hover {
             transform: none !important;
@@ -2835,6 +2917,7 @@ def _apply_global_styles():
         .topbar-pill,
         .security-pill,
         .severity-chip,
+        .project-kicker,
         .hero-kicker,
         .captain-badge,
         .tower-badge,
@@ -2873,6 +2956,20 @@ def _apply_global_styles():
                 padding-right: 0.75rem;
                 padding-top: 0.75rem;
             }
+            .project-identity {
+                grid-template-columns: 1fr;
+                gap: 0.65rem;
+                padding: 0.8rem;
+            }
+            .project-identity h1 {
+                font-size: 1.42rem !important;
+            }
+            .project-section-chip {
+                width: 100%;
+                min-width: 0;
+                justify-content: flex-start;
+                text-align: left;
+            }
             h1 {
                 font-size: 1.65rem !important;
                 line-height: 1.15 !important;
@@ -2901,9 +2998,15 @@ def _apply_global_styles():
             .topbar-glass {
                 padding: 0.55rem 0.65rem;
             }
-            .topbar-title {
+            .topbar-title-stack {
                 width: 100%;
+                min-width: 0;
+            }
+            .topbar-title {
                 font-size: 0.95rem;
+            }
+            .topbar-subtitle {
+                font-size: 0.72rem;
             }
             .topbar-meta {
                 font-size: 0.76rem;
@@ -4986,8 +5089,8 @@ def show_global_dashboard():
     st.markdown(
         f"""
         <div class="dashboard-hero">
-            <span class="hero-kicker">Global Mission Dashboard</span>
-            <h2>{safe_html(mission_status)} maritime operating picture</h2>
+            <span class="hero-kicker">{safe_html(PROJECT_TITLE)}</span>
+            <h2>{safe_html(mission_status)} mission dashboard</h2>
             <p>{safe_html(hero_tone)}. Tracking routes, live/fallback vessels, cargo pressure, AI risk, alerts, and readiness in one submission-ready command view.</p>
         </div>
         """,
@@ -7872,7 +7975,7 @@ def render_login_gate(auth_meta):
         .login-wrapper { max-width: 1050px; margin: 0 auto; padding: 1.4rem 0.5rem 0.6rem; }
         .login-header { text-align: center; margin-bottom: 1.15rem; }
         .login-badge-new { display: inline-block; background: rgba(20, 184, 166, 0.14); color: #99f6e4; padding: 0.34rem 0.78rem; border-radius: 999px; font-size: 0.78rem; font-weight: 800; letter-spacing: 0; border: 1px solid rgba(45, 212, 191, 0.28); margin-bottom: 0.75rem; text-transform: uppercase; }
-        .login-title-new { color: #f8fafc; font-size: 2.45rem; font-weight: 850; margin-bottom: 0.45rem; line-height: 1.15; }
+        .login-title-new { color: #f8fafc; font-size: clamp(1.85rem, 4vw, 2.45rem); font-weight: 850; max-width: 860px; margin: 0 auto 0.45rem; line-height: 1.15; }
         .login-subtitle-new { color: #cbd5e1; font-size: 1rem; max-width: 690px; margin: 0 auto; line-height: 1.5; }
         .login-status-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; max-width: 900px; margin: 1rem auto 0; }
         .login-status-pill { border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); background: rgba(15, 23, 42, 0.56); padding: 0.62rem 0.72rem; color: #e2e8f0; text-align: left; }
@@ -7897,7 +8000,7 @@ def render_login_gate(auth_meta):
             .role-entry-card p { min-height: auto; }
         }
         </style>
-        <div class="login-wrapper"><div class="login-header"><div class="login-badge-new">Secure Command Access</div><div class="login-title-new">Maritime Command OS</div><div class="login-subtitle-new">Choose one clear role. The platform unlocks only the sections and actions allowed for that clearance.</div></div></div>
+        <div class="login-wrapper"><div class="login-header"><div class="login-badge-new">Secure Command Access</div><div class="login-title-new">Global AI Trade Intelligence Platform</div><div class="login-subtitle-new">AI maritime command system for routes, vessels, cargo, risks, reports, and role-based operations.</div></div></div>
         """,
         unsafe_allow_html=True,
     )
@@ -9306,6 +9409,23 @@ def sanitize_public_overview(overview):
     return safe
 
 
+def render_project_identity_bar(section):
+    summary = SECTION_SUMMARIES.get(section, "AI-powered maritime intelligence, operations, and reporting")
+    st.markdown(
+        f"""
+        <div class="project-identity">
+            <div>
+                <span class="project-kicker">Academic Project</span>
+                <h1>{safe_html(PROJECT_TITLE)}</h1>
+                <p><b>{safe_html(section)}</b> section: {safe_html(summary)}.</p>
+            </div>
+            <div class="project-section-chip">{safe_html(current_role())} View</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     _configure_page()
     _apply_global_styles()
@@ -9319,12 +9439,12 @@ def main():
         render_login_gate(get_auth_metadata())
         return
 
-    st.sidebar.title("Navigation")
+    st.sidebar.title("Project Navigation")
     st.sidebar.markdown(
-        """
+        f"""
         <div class="sidebar-brand">
-            <b>Maritime AI Command</b>
-            <span>Live routes, vessels, risk, and cargo</span>
+            <b>{safe_html(PROJECT_TITLE)}</b>
+            <span>{safe_html(PROJECT_SUBTITLE)}</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -9354,6 +9474,7 @@ def main():
         st.session_state.selected_page = next(iter(allowed_pages))
     page = st.sidebar.selectbox("Main Section", list(allowed_pages.keys()), key="selected_page", on_change=close_utility_page)
     render_top_utility_bar(notifications, health)
+    render_project_identity_bar(page)
 
     allowed_pages[page]()
 
