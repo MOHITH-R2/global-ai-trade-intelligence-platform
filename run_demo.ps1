@@ -14,13 +14,32 @@ if (-not (Test-Path $python)) {
     throw "Virtual environment not found. Run: python -m venv venv; venv\Scripts\pip install -r requirements.txt"
 }
 
-function Get-PortOwner {
+function Get-PortOwners {
     param([int]$Port)
-    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($connection) {
-        return $connection.OwningProcess
+
+    $owners = @()
+    try {
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+        foreach ($connection in $connections) {
+            if ($connection.OwningProcess) {
+                $owners += [int]$connection.OwningProcess
+            }
+        }
+    } catch {
+        $owners = @()
     }
-    return $null
+
+    if ($owners.Count -eq 0) {
+        $pattern = "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$"
+        $matches = @(netstat -ano | Select-String -Pattern $pattern)
+        foreach ($match in $matches) {
+            if ($match.Matches.Count -gt 0) {
+                $owners += [int]$match.Matches[0].Groups[1].Value
+            }
+        }
+    }
+
+    return @($owners | Sort-Object -Unique)
 }
 
 function Start-ServiceIfNeeded {
@@ -36,16 +55,20 @@ function Start-ServiceIfNeeded {
         return
     }
 
-    $existingPid = Get-PortOwner -Port $Port
-    if ($existingPid -and $Restart) {
-        Write-Host "Stopping existing $Name on port $Port (PID $existingPid)..."
-        Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+    $existingPids = @(Get-PortOwners -Port $Port)
+    if ($existingPids.Count -gt 0 -and $Restart) {
+        $pidList = $existingPids -join ", "
+        Write-Host "Stopping existing $Name on port $Port (PID $pidList)..."
+        foreach ($processId in $existingPids) {
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Seconds 1
-        $existingPid = Get-PortOwner -Port $Port
+        $existingPids = @(Get-PortOwners -Port $Port)
     }
 
-    if ($existingPid) {
-        Write-Host "$Name already running on port $Port (PID $existingPid). Use .\run_demo.ps1 -Restart to restart it."
+    if ($existingPids.Count -gt 0) {
+        $pidList = $existingPids -join ", "
+        Write-Host "$Name already running on port $Port (PID $pidList). Use .\run_demo.ps1 -Restart to restart it."
         return
     }
 

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 from database.connection import get_db, SessionLocal, engine
 from database.models import (
@@ -44,6 +45,27 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+SESSION_CACHE_KEY = "_summary_cache"
+
+
+def clear_session_cache(db: Session):
+    if hasattr(db, "info"):
+        db.info.pop(SESSION_CACHE_KEY, None)
+
+
+def cached_session_value(db: Session, key: tuple, builder):
+    if not hasattr(db, "info"):
+        return builder()
+    cache = db.info.setdefault(SESSION_CACHE_KEY, {})
+    if key not in cache:
+        cache[key] = builder()
+    return cache[key]
+
+
+@event.listens_for(Session, "after_commit")
+@event.listens_for(Session, "after_rollback")
+def clear_cached_session_values(session):
+    session.info.pop(SESSION_CACHE_KEY, None)
 
 # Pydantic models
 class VesselCreate(BaseModel):
@@ -1268,6 +1290,10 @@ def parse_iso_datetime(value: str | None) -> datetime.datetime | None:
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("health",), lambda: _health(db))
+
+
+def _health(db: Session):
     checked_at = datetime.datetime.now(datetime.timezone.utc)
     uptime_seconds = int((checked_at - APP_STARTED_AT).total_seconds())
     try:
@@ -1568,6 +1594,10 @@ def get_stats(db: Session = Depends(get_db)):
 
 @app.get("/ai/risk-assessments")
 def get_ai_route_assessments(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("ai_route_assessments",), lambda: _get_ai_route_assessments(db))
+
+
+def _get_ai_route_assessments(db: Session):
     routes = unique_by(
         db.query(TradeRoute).order_by(TradeRoute.id).all(),
         lambda route: (route.origin_port, route.destination_port),
@@ -1674,6 +1704,10 @@ def get_operations_timeline(limit: int = 100, db: Session = Depends(get_db)):
 
 @app.get("/operations/intelligence")
 def get_operations_intelligence_v2(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("operations_intelligence_v2",), lambda: _get_operations_intelligence_v2(db))
+
+
+def _get_operations_intelligence_v2(db: Session):
     manifests = db.query(CargoManifest).order_by(CargoManifest.updated_at.desc()).limit(200).all()
     actions = db.query(AIAction).order_by(AIAction.updated_at.desc()).limit(100).all()
     incidents = db.query(IncidentEvent).order_by(IncidentEvent.timestamp.desc()).limit(100).all()
@@ -1708,6 +1742,15 @@ def get_operations_intelligence_v2(db: Session = Depends(get_db)):
 
 @app.get("/notifications")
 def get_notifications(limit: int = 50, db: Session = Depends(get_db)):
+    normalized_limit = max(1, min(limit, 200))
+    return cached_session_value(
+        db,
+        ("notifications", normalized_limit),
+        lambda: _get_notifications(normalized_limit, db),
+    )
+
+
+def _get_notifications(limit: int = 50, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 200))
     rows = []
     ais_status = get_aisstream_status()
@@ -1969,6 +2012,15 @@ def deliver_notifications(
 
 @app.get("/notifications/intelligence")
 def get_notification_intelligence(limit: int = 120, db: Session = Depends(get_db)):
+    normalized_limit = max(1, min(limit, 300))
+    return cached_session_value(
+        db,
+        ("notification_intelligence", normalized_limit),
+        lambda: _get_notification_intelligence(normalized_limit, db),
+    )
+
+
+def _get_notification_intelligence(limit: int = 120, db: Session = Depends(get_db)):
     rows = get_notifications(limit=limit, db=db)
     grouped: dict[str, dict] = {}
     for row in rows:
@@ -2063,6 +2115,15 @@ def build_inbox_item(
 
 
 def build_operations_inbox(db: Session, limit: int = 60) -> dict:
+    normalized_limit = max(10, min(limit, 150))
+    return cached_session_value(
+        db,
+        ("operations_inbox", normalized_limit),
+        lambda: _build_operations_inbox(db, normalized_limit),
+    )
+
+
+def _build_operations_inbox(db: Session, limit: int = 60) -> dict:
     limit = max(10, min(limit, 150))
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     items: list[dict] = []
@@ -2287,6 +2348,10 @@ def get_runtime_settings():
 
 @app.get("/settings/production-mode")
 def get_production_mode(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("production_mode",), lambda: _get_production_mode(db))
+
+
+def _get_production_mode(db: Session):
     enabled = production_mode_enabled()
     ais = get_aisstream_status()
     provider_status = get_auth_provider_status()
@@ -2378,6 +2443,10 @@ def update_production_mode(
 
 @app.get("/ais/reliability")
 def get_ais_reliability(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("ais_reliability",), lambda: _get_ais_reliability(db))
+
+
+def _get_ais_reliability(db: Session):
     ais = get_aisstream_status()
     live_vessels = get_aisstream_vessels(limit=120) if ais.get("enabled") else []
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -3204,6 +3273,10 @@ def get_maritime_weather(db: Session = Depends(get_db)):
 
 @app.get("/deployment/hardening")
 def get_deployment_hardening(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("deployment_hardening",), lambda: _get_deployment_hardening(db))
+
+
+def _get_deployment_hardening(db: Session):
     readiness = get_deployment_readiness(db)
     provider_status = get_auth_provider_status()
     checks = list(readiness.get("checks", []))
@@ -3254,6 +3327,10 @@ def get_deployment_hardening(db: Session = Depends(get_db)):
 
 @app.get("/system/reliability")
 def get_system_reliability(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("system_reliability",), lambda: _get_system_reliability(db))
+
+
+def _get_system_reliability(db: Session):
     health_packet = health(db)
     ais = get_ais_reliability(db)
     quality = get_data_quality(db)
@@ -3454,20 +3531,24 @@ def update_alert_workflow(
 
 
 def route_assessment_lookup(db: Session) -> dict[str, dict]:
-    routes = unique_by(
-        db.query(TradeRoute).order_by(TradeRoute.id).all(),
-        lambda route: (route.origin_port, route.destination_port),
+    return cached_session_value(
+        db,
+        ("route_assessment_lookup",),
+        lambda: {item["route"]: item for item in get_ai_route_assessments(db)},
     )
-    alerts = unique_by(
-        db.query(ThreatAlert).order_by(ThreatAlert.id.desc()).all(),
-        lambda alert: (alert.title, alert.location, alert.severity),
-    )
-    assessments = build_route_assessments(routes, alerts)
-    return {item["route"]: item for item in assessments}
 
 
 @app.get("/vessels/predictions")
 def get_vessel_predictions(limit: int = 50, db: Session = Depends(get_db)):
+    normalized_limit = max(1, min(limit, 200))
+    return cached_session_value(
+        db,
+        ("vessel_predictions", normalized_limit),
+        lambda: _get_vessel_predictions(normalized_limit, db),
+    )
+
+
+def _get_vessel_predictions(limit: int = 50, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 200))
     vessels, source = get_operational_vessels(db)
     assessments = route_assessment_lookup(db)
@@ -3579,6 +3660,10 @@ def quality_status(score: int) -> str:
 
 @app.get("/data-quality")
 def get_data_quality(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("data_quality",), lambda: _get_data_quality(db))
+
+
+def _get_data_quality(db: Session):
     checks = []
     vessels, source = get_operational_vessels(db)
     vessel_names = [str(vessel.get("name") or "") for vessel in vessels]
@@ -3645,6 +3730,10 @@ def manifest_sort_epoch(manifest: CargoManifest) -> float:
 
 @app.get("/data-cleanup/summary")
 def get_data_cleanup_summary(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("data_cleanup_summary",), lambda: _get_data_cleanup_summary(db))
+
+
+def _get_data_cleanup_summary(db: Session):
     manifest_total = db.query(CargoManifest).count()
     ai_total = db.query(AIAction).count()
     incident_total = db.query(IncidentEvent).count()
@@ -3770,6 +3859,10 @@ def run_data_cleanup(
 
 @app.get("/deployment/readiness")
 def get_deployment_readiness(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("deployment_readiness",), lambda: _get_deployment_readiness(db))
+
+
+def _get_deployment_readiness(db: Session):
     def contains_text(path: str, needle: str) -> bool:
         try:
             with open(path, "r", encoding="utf-8") as handle:
@@ -3826,6 +3919,10 @@ def get_deployment_readiness(db: Session = Depends(get_db)):
 
 @app.get("/executive/brief")
 def get_executive_brief(db: Session = Depends(get_db)):
+    return cached_session_value(db, ("executive_brief",), lambda: _get_executive_brief(db))
+
+
+def _get_executive_brief(db: Session):
     operations = get_operations_intelligence_v2(db)
     assessments = get_ai_route_assessments(db)
     predictions = get_vessel_predictions(limit=20, db=db)["predictions"]
@@ -3874,6 +3971,15 @@ def mission_priority(score: float) -> str:
 
 
 def notification_digest(limit: int = 150, db: Session = Depends(get_db)) -> dict:
+    normalized_limit = max(1, min(limit, 300))
+    return cached_session_value(
+        db,
+        ("notification_digest", normalized_limit),
+        lambda: _notification_digest(normalized_limit, db),
+    )
+
+
+def _notification_digest(limit: int = 150, db: Session = Depends(get_db)) -> dict:
     intelligence = get_notification_intelligence(limit=limit, db=db)
     groups = intelligence.get("groups", [])
     weights = {"critical": 5, "warning": 2, "info": 0.5}
@@ -3934,6 +4040,12 @@ def get_notifications_digest(limit: int = 150, db: Session = Depends(get_db)):
 
 
 def build_incident_commander_cards(db: Session, persist: bool = False) -> dict:
+    if not persist:
+        return cached_session_value(db, ("incident_commander_cards", False), lambda: _build_incident_commander_cards(db, persist=False))
+    return _build_incident_commander_cards(db, persist=True)
+
+
+def _build_incident_commander_cards(db: Session, persist: bool = False) -> dict:
     now = datetime.datetime.now(datetime.timezone.utc)
     cards = []
     assessments = get_ai_route_assessments(db)
@@ -4073,6 +4185,10 @@ def get_incident_commander(persist: bool = False, db: Session = Depends(get_db))
 
 
 def build_mission_control(db: Session) -> dict:
+    return cached_session_value(db, ("mission_control",), lambda: _build_mission_control(db))
+
+
+def _build_mission_control(db: Session) -> dict:
     brief = get_executive_brief(db)
     operations = get_operations_intelligence_v2(db)
     assessments = get_ai_route_assessments(db)
@@ -4198,6 +4314,10 @@ def build_mission_control(db: Session) -> dict:
 
 
 def build_war_room(db: Session) -> dict:
+    return cached_session_value(db, ("war_room",), lambda: _build_war_room(db))
+
+
+def _build_war_room(db: Session) -> dict:
     mission = build_mission_control(db)
     top_problem = mission.get("top_problem", {})
     lane = top_problem.get("lane", "Command")
@@ -4444,6 +4564,15 @@ def incident_eta_window(score: float) -> str:
 
 
 def build_live_incident_predictions(db: Session, limit: int = 7) -> dict:
+    normalized_limit = max(1, min(limit, 10))
+    return cached_session_value(
+        db,
+        ("live_incident_predictions", normalized_limit),
+        lambda: _build_live_incident_predictions(db, normalized_limit),
+    )
+
+
+def _build_live_incident_predictions(db: Session, limit: int = 7) -> dict:
     intelligence = build_ai_risk_intelligence(db)
     categories = intelligence.get("categories", [])
     forecast_rows = intelligence.get("forecast", [])
@@ -4669,6 +4798,11 @@ def captain_map_overlay(
 
 
 def build_ai_captain(db: Session, origin: str | None = None, destination: str | None = None) -> dict:
+    cache_key = ("ai_captain", (origin or "").strip().lower(), (destination or "").strip().lower())
+    return cached_session_value(db, cache_key, lambda: _build_ai_captain(db, origin=origin, destination=destination))
+
+
+def _build_ai_captain(db: Session, origin: str | None = None, destination: str | None = None) -> dict:
     mission = build_mission_control(db)
     incident_packet = build_live_incident_predictions(db)
     assessments = get_ai_route_assessments(db)
@@ -5145,6 +5279,10 @@ def ai_decision_memory(db: Session) -> list[dict]:
 
 
 def build_ai_risk_intelligence(db: Session) -> dict:
+    return cached_session_value(db, ("ai_risk_intelligence",), lambda: _build_ai_risk_intelligence(db))
+
+
+def _build_ai_risk_intelligence(db: Session) -> dict:
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     alerts = unique_by(
         db.query(ThreatAlert).order_by(ThreatAlert.id.desc()).limit(160).all(),
@@ -5610,6 +5748,10 @@ def route_id_by_name(db: Session) -> dict[str, int]:
 
 
 def build_strategic_autopilot(db: Session) -> dict:
+    return cached_session_value(db, ("strategic_autopilot",), lambda: _build_strategic_autopilot(db))
+
+
+def _build_strategic_autopilot(db: Session) -> dict:
     mission = build_mission_control(db)
     war_room = build_war_room(db)
     overlay = get_mission_map_overlay(db=db)
@@ -8957,6 +9099,10 @@ def enrich_vessels_with_cargo_context(vessels: list[dict], db: Session, source: 
 
 
 def get_operational_vessels(db: Session):
+    return cached_session_value(db, ("operational_vessels",), lambda: _get_operational_vessels(db))
+
+
+def _get_operational_vessels(db: Session):
     real_vessels = get_aisstream_vessels()
     if real_vessels:
         return enrich_vessels_with_cargo_context(real_vessels, db, "AISStream"), "AISStream"
@@ -9608,16 +9754,17 @@ def get_operations_intelligence(db: Session = Depends(get_db)):
 
 @app.get("/analytics/forecast")
 def get_risk_forecast(days: int = 14, db: Session = Depends(get_db)):
+    normalized_days = max(3, min(days, 30))
+    return cached_session_value(
+        db,
+        ("risk_forecast", normalized_days),
+        lambda: _get_risk_forecast(normalized_days, db),
+    )
+
+
+def _get_risk_forecast(days: int = 14, db: Session = Depends(get_db)):
     days = max(3, min(days, 30))
-    routes = unique_by(
-        db.query(TradeRoute).order_by(TradeRoute.id).all(),
-        lambda route: (route.origin_port, route.destination_port),
-    )
-    alerts = unique_by(
-        db.query(ThreatAlert).order_by(ThreatAlert.id.desc()).all(),
-        lambda alert: (alert.title, alert.location, alert.severity),
-    )
-    assessments = build_route_assessments(routes, alerts)
+    assessments = get_ai_route_assessments(db)
     logs = db.query(RiskLog).order_by(RiskLog.timestamp).all()
     history = [
         {

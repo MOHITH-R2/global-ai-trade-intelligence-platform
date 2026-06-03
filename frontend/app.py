@@ -102,7 +102,7 @@ def api_cache_ttl(path):
 
 @st.cache_data(show_spinner=False, max_entries=256)
 def cached_api_get(api_base, path, cache_bucket):
-    response = requests.get(f"{api_base}{path}", timeout=API_TIMEOUT)
+    response = HTTP.get(f"{api_base}{path}", timeout=API_TIMEOUT)
     response.raise_for_status()
     return response.json()
 
@@ -1236,17 +1236,17 @@ def threat_visual_data(threats):
         if "pirate" in threat_type:
             color = [248, 113, 113, 235]
             effect = [239, 68, 68, 88]
-            symbol = "ðŸ´â€â˜ ï¸"
+            symbol = "PIR"
             radius = 165000
         elif "storm" in threat_type:
             color = [96, 165, 250, 225]
             effect = [59, 130, 246, 78]
-            symbol = "â›ˆï¸"
+            symbol = "STM"
             radius = 220000
         else:
             color = [250, 204, 21, 230]
             effect = [250, 204, 21, 72]
-            symbol = "âš ï¸"
+            symbol = "!"
             radius = 160000
         row = {
             "name": threat.get("name", "Threat"),
@@ -1293,8 +1293,8 @@ def radar_ring_data(vessel_rows, threat_rows):
             "lat": row["lat"],
             "lon": row["lon"],
             "radius": row["effect_radius"] * 1.25,
-            "color": [248, 113, 113, 30] if row["symbol"] == "ðŸ´â€â˜ ï¸" else [96, 165, 250, 26],
-            "line": [248, 113, 113, 160] if row["symbol"] == "ðŸ´â€â˜ ï¸" else [96, 165, 250, 150],
+            "color": [248, 113, 113, 30] if row["symbol"] == "PIR" else [96, 165, 250, 26],
+            "line": [248, 113, 113, 160] if row["symbol"] == "PIR" else [96, 165, 250, 150],
         })
     return rows
 
@@ -1434,22 +1434,22 @@ def build_nautical_layers(vessels, routes, status_key="status", threats=None, de
         if status == "destroyed":
             color = [220, 38, 38, 235]
             effect = [220, 38, 38, 92]
-            symbol = "ðŸ’¥"
+            symbol = "X"
             size = 30
         elif status == "damaged":
             color = [245, 158, 11, 235]
             effect = [245, 158, 11, 86]
-            symbol = "âš ï¸"
+            symbol = "!"
             size = 28
         elif status == "maintenance":
             color = [148, 163, 184, 215]
             effect = [148, 163, 184, 45]
-            symbol = "ðŸ”§"
+            symbol = "M"
             size = 24
         else:
             color = [34, 211, 238, 235]
             effect = [34, 211, 238, 52]
-            symbol = "ðŸš¢"
+            symbol = "SHIP"
             size = 28
 
         route = routes[index % len(routes)] if routes else None
@@ -1760,7 +1760,7 @@ def render_nautical_legend():
     st.markdown(
         """
         <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:13px; margin:4px 0 10px 0;">
-            <span><b style="color:#22d3ee;">â–² Active ship</b></span>
+            <span><b style="color:#22d3ee;">SHIP Active ship</b></span>
             <span><b style="color:#f59e0b;">! Damaged</b></span>
             <span><b style="color:#ef4444;">X Demolished</b></span>
             <span><b style="color:#f87171;">P Pirate approaching</b></span>
@@ -1958,7 +1958,7 @@ def render_live_scan_hud(threats=None, decisions=None):
         }}
         .scan-title {{
             font-weight: 800;
-            letter-spacing: .08em;
+            letter-spacing: 0;
             text-transform: uppercase;
             color: #67e8f9;
             font-size: 13px;
@@ -2054,7 +2054,7 @@ def _apply_global_styles():
             color: #e0f2fe;
         }
         h1, h2, h3 {
-            letter-spacing: -0.035em;
+            letter-spacing: 0;
             color: #f8fafc;
         }
         h1 {
@@ -2160,7 +2160,7 @@ def _apply_global_styles():
             font-size: 0.75rem;
             font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.045em;
+            letter-spacing: 0;
         }
         .sidebar-brand {
             border-radius: 20px;
@@ -2207,8 +2207,8 @@ def _apply_global_styles():
         }
         .dashboard-hero h2 {
             margin: 0.25rem 0 0.35rem 0;
-            font-size: clamp(1.75rem, 3.8vw, 3.25rem);
-            letter-spacing: -0.05em;
+            font-size: 2.35rem;
+            letter-spacing: 0;
         }
         .dashboard-hero p {
             margin: 0;
@@ -2225,7 +2225,7 @@ def _apply_global_styles():
             font-size: 0.78rem;
             font-weight: 850;
             text-transform: uppercase;
-            letter-spacing: 0.055em;
+            letter-spacing: 0;
         }
         @keyframes commandFloat {
             from { transform: translate3d(0, 0, 0) scale(1); opacity: 0.78; }
@@ -2379,7 +2379,7 @@ def _apply_global_styles():
             font-size: 0.78rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
+            letter-spacing: 0;
         }
         .action-step {
             border-left: 3px solid #22d3ee;
@@ -2446,7 +2446,7 @@ def _apply_global_styles():
         }
         .tower-hero h2 {
             margin: 0.2rem 0 0.35rem 0;
-            font-size: clamp(1.55rem, 3vw, 2.7rem);
+            font-size: 2.1rem;
         }
         .tower-hero p {
             margin: 0;
@@ -2463,7 +2463,7 @@ def _apply_global_styles():
             color: #99f6e4;
             font-weight: 800;
             font-size: 0.76rem;
-            letter-spacing: 0.04em;
+            letter-spacing: 0;
             text-transform: uppercase;
         }
         .tower-decision {
@@ -2508,8 +2508,8 @@ def _apply_global_styles():
         }
         .captain-hero h2 {
             margin: 0.24rem 0 0.35rem 0;
-            font-size: clamp(1.8rem, 4vw, 3.4rem);
-            letter-spacing: -0.04em;
+            font-size: 2.35rem;
+            letter-spacing: 0;
         }
         .captain-hero p {
             margin: 0;
@@ -2525,7 +2525,7 @@ def _apply_global_styles():
             color: #fde68a;
             font-weight: 850;
             font-size: 0.78rem;
-            letter-spacing: 0.055em;
+            letter-spacing: 0;
             text-transform: uppercase;
         }
         .captain-order-card {
@@ -2590,7 +2590,7 @@ def _apply_global_styles():
             pointer-events: none;
         }
         .login-title {
-            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-size: 3rem;
             font-weight: 900;
             line-height: 1.1;
             margin-bottom: 0.8rem;
@@ -2618,7 +2618,7 @@ def _apply_global_styles():
             margin-bottom: 1rem;
             box-shadow: 0 0 15px rgba(14, 165, 233, 0.2);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0;
         }
         .login-panel {
             border-radius: 24px;
@@ -2949,6 +2949,200 @@ def _apply_global_styles():
         }
         .sidebar .sidebar-content {
             background-color: transparent;
+        }
+        /* Final visibility and alignment polish */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+        html, body, .stApp {
+            text-rendering: optimizeLegibility;
+        }
+        .stApp, [data-testid="stMarkdownContainer"], p, li, span, label {
+            color: #e5edf6;
+        }
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li {
+            line-height: 1.52;
+        }
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stMarkdownContainer"] *,
+        [data-testid="stMetric"],
+        [data-testid="stMetric"] *,
+        .project-identity,
+        .project-identity *,
+        .notification-card,
+        .notification-card *,
+        .inbox-card,
+        .inbox-card *,
+        .mission-card,
+        .mission-card *,
+        .incident-card,
+        .incident-card *,
+        .tower-plan-card,
+        .tower-plan-card *,
+        .captain-order-card,
+        .captain-order-card *,
+        .solver-answer,
+        .solver-answer *,
+        .action-step,
+        .action-step * {
+            overflow-wrap: anywhere;
+            word-break: normal;
+        }
+        div[data-testid="stHorizontalBlock"] > div {
+            min-width: 0;
+        }
+        .stApp {
+            background:
+                linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.026) 1px, transparent 1px),
+                linear-gradient(135deg, #06111f 0%, #102032 48%, #2a2132 100%) !important;
+        }
+        .dashboard-hero,
+        .captain-hero,
+        .tower-hero,
+        .security-card,
+        .inbox-card,
+        .solver-hero,
+        .mission-card,
+        .vessel-intel-card,
+        .role-entry-card,
+        .form-container {
+            background:
+                linear-gradient(135deg, rgba(13, 28, 44, 0.96), rgba(20, 38, 54, 0.9) 56%, rgba(43, 33, 50, 0.86)) !important;
+            border-color: rgba(203, 213, 225, 0.22) !important;
+        }
+        .notification-card,
+        .utility-panel,
+        .settings-band,
+        .settings-band-new,
+        [data-testid="stExpander"] {
+            background: rgba(13, 25, 39, 0.84) !important;
+            border-color: rgba(203, 213, 225, 0.2) !important;
+        }
+        [data-testid="stMetric"] {
+            min-height: 5.7rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            border-top: 3px solid rgba(45, 212, 191, 0.55) !important;
+        }
+        [data-testid="stMetric"] > div {
+            min-width: 0;
+        }
+        [data-testid="stMetricLabel"] p {
+            color: #bfd0df !important;
+            font-weight: 720 !important;
+            line-height: 1.24 !important;
+        }
+        [data-testid="stMetricValue"] {
+            color: #ffffff !important;
+            max-width: 100%;
+        }
+        [data-testid="stMetricDelta"] {
+            min-height: 1.2rem;
+        }
+        .metric-card,
+        .mission-card,
+        .incident-card,
+        .notification-card,
+        .inbox-card,
+        .tower-plan-card,
+        .captain-order-card,
+        .solver-answer,
+        .action-step,
+        .role-entry-card,
+        .login-status-pill {
+            min-height: 100%;
+        }
+        .mission-card,
+        .inbox-card,
+        .notification-card,
+        .tower-plan-card,
+        .captain-order-card,
+        .solver-answer,
+        .action-step {
+            display: flex;
+            flex-direction: column;
+            gap: 0.32rem;
+        }
+        .severity-chip,
+        .security-pill,
+        .solver-chip,
+        .project-kicker,
+        .hero-kicker,
+        .topbar-pill {
+            display: inline-flex !important;
+            align-items: center;
+            width: fit-content;
+            max-width: 100%;
+            line-height: 1.18;
+            color: #f8fafc !important;
+        }
+        .severity-chip {
+            margin-bottom: 0.18rem;
+        }
+        .project-identity {
+            border-left: 4px solid #2dd4bf !important;
+        }
+        .project-section-chip {
+            border-color: rgba(250, 204, 21, 0.34) !important;
+            color: #fde68a !important;
+        }
+        [data-testid="stDataFrame"] {
+            background: rgba(8, 15, 26, 0.86) !important;
+            border-color: rgba(203, 213, 225, 0.22) !important;
+        }
+        [data-testid="stDataFrame"] div {
+            line-height: 1.35;
+        }
+        [data-testid="stTable"] {
+            overflow-x: auto;
+        }
+        input, textarea {
+            color: #f8fafc !important;
+            caret-color: #2dd4bf !important;
+        }
+        [data-baseweb="select"] span,
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {
+            color: #f8fafc !important;
+        }
+        .stButton > button {
+            align-items: center !important;
+            line-height: 1.18 !important;
+        }
+        .stButton > button p {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+            line-height: 1.18 !important;
+        }
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.92), rgba(14, 116, 144, 0.92)) !important;
+            border-color: rgba(153, 246, 228, 0.48) !important;
+            color: #f8fafc !important;
+        }
+        [data-baseweb="tab-list"] {
+            overflow-x: auto;
+            flex-wrap: nowrap;
+            padding-bottom: 0.1rem;
+        }
+        [data-baseweb="tab"] {
+            flex: 0 0 auto;
+            max-width: 14rem;
+        }
+        [data-baseweb="tab"] p {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+        }
+        .topbar-card,
+        .topbar-glass {
+            backdrop-filter: blur(10px);
+        }
+        .footer p {
+            color: #9fb0c2 !important;
         }
         @media (max-width: 760px) {
             .block-container {
@@ -7409,7 +7603,7 @@ def show_command_copilot():
     if "problem_solver_topic" not in st.session_state:
         st.session_state.problem_solver_topic = "Auto"
 
-    st.markdown("### 🧠 Scenario Templates")
+    st.markdown("### Scenario Templates")
     template_cols = st.columns(3)
     for index, (label, text) in enumerate(examples):
         with template_cols[index % 3]:
@@ -7455,19 +7649,19 @@ def show_command_copilot():
         return
 
     st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 2rem 0;'>", unsafe_allow_html=True)
-    st.markdown("### 🤖 Intelligence Report")
+    st.markdown("### Intelligence Report")
 
     severity = str(result.get("severity", "info")).lower()
     if result.get("status") == "off_topic":
         st.warning(result.get("answer", "This problem is outside the configured maritime topics."))
     elif severity == "critical":
-        st.error(f"🚨 **CRITICAL ALERT:** {result.get('answer', 'Critical issue detected.')}")
+        st.error(f"**CRITICAL ALERT:** {result.get('answer', 'Critical issue detected.')}")
     elif severity == "watch":
-        st.warning(f"⚠️ **WATCH ITEM:** {result.get('answer', 'Watch issue detected.')}")
+        st.warning(f"**WATCH ITEM:** {result.get('answer', 'Watch issue detected.')}")
     elif severity == "normal":
-        st.success(f"✅ **ALL CLEAR:** {result.get('answer', 'No critical issue detected.')}")
+        st.success(f"**ALL CLEAR:** {result.get('answer', 'No critical issue detected.')}")
     else:
-        st.info(f"ℹ️ **ANALYSIS:** {result.get('answer', 'Problem reviewed.')}")
+        st.info(f"**ANALYSIS:** {result.get('answer', 'Problem reviewed.')}")
 
     metric_cols = st.columns(4)
     with metric_cols[0]:
@@ -7560,7 +7754,7 @@ def show_command_copilot():
         if result.get("status") == "off_topic":
             st.caption("Allowed topics: " + ", ".join(result.get("allowed_topics", [])))
 
-    with st.expander("📋 Export Copy-Ready Response"):
+    with st.expander("Export Copy-Ready Response"):
         st.code(
             "\n".join(
                 [
@@ -7574,7 +7768,7 @@ def show_command_copilot():
             ),
             language="text",
         )
-    with st.expander("🔍 AI Explainability & Audit Constraints"):
+    with st.expander("AI Explainability & Audit Constraints"):
         explain = result.get("explainability", {})
         st.caption(f"**Analysis Engine:** {explain.get('method', 'No explainability returned.')}")
         inputs = pd.DataFrame({"Data Inputs Considered": explain.get("inputs", [])})
@@ -7975,7 +8169,7 @@ def render_login_gate(auth_meta):
         .login-wrapper { max-width: 1050px; margin: 0 auto; padding: 1.4rem 0.5rem 0.6rem; }
         .login-header { text-align: center; margin-bottom: 1.15rem; }
         .login-badge-new { display: inline-block; background: rgba(20, 184, 166, 0.14); color: #99f6e4; padding: 0.34rem 0.78rem; border-radius: 999px; font-size: 0.78rem; font-weight: 800; letter-spacing: 0; border: 1px solid rgba(45, 212, 191, 0.28); margin-bottom: 0.75rem; text-transform: uppercase; }
-        .login-title-new { color: #f8fafc; font-size: clamp(1.85rem, 4vw, 2.45rem); font-weight: 850; max-width: 860px; margin: 0 auto 0.45rem; line-height: 1.15; }
+        .login-title-new { color: #f8fafc; font-size: 2.25rem; font-weight: 850; max-width: 860px; margin: 0 auto 0.45rem; line-height: 1.15; }
         .login-subtitle-new { color: #cbd5e1; font-size: 1rem; max-width: 690px; margin: 0 auto; line-height: 1.5; }
         .login-status-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; max-width: 900px; margin: 1rem auto 0; }
         .login-status-pill { border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); background: rgba(15, 23, 42, 0.56); padding: 0.62rem 0.72rem; color: #e2e8f0; text-align: left; }
