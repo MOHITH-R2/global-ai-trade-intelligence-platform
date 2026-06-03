@@ -3770,16 +3770,43 @@ def run_data_cleanup(
 
 @app.get("/deployment/readiness")
 def get_deployment_readiness(db: Session = Depends(get_db)):
+    def contains_text(path: str, needle: str) -> bool:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return needle in handle.read()
+        except OSError:
+            return False
+
+    production_enabled = production_mode_enabled()
+    dockerignore_ready = (
+        os.path.exists(".dockerignore")
+        and contains_text(".dockerignore", ".env")
+        and contains_text(".dockerignore", ".runtime/")
+        and contains_text(".dockerignore", "venv/")
+    )
+    gitignore_ready = contains_text(".gitignore", ".env") and contains_text(".gitignore", ".runtime/")
+    compose_frontend_ready = contains_text("docker-compose.yml", "API_BASE: http://backend:8001")
+    if production_enabled:
+        demo_guard_status = "pass" if not demo_accounts_allowed() else "warn"
+        demo_guard_detail = "Demo accounts are blocked in production." if not demo_accounts_allowed() else "ALLOW_DEMO_ACCOUNTS_IN_PRODUCTION is enabled; turn it off for public hosting."
+    else:
+        demo_guard_status = "pass"
+        demo_guard_detail = "Demo accounts are allowed only because the app is running in local demo mode."
     checks = [
         {"name": "Dockerfile", "status": "pass" if os.path.exists("Dockerfile") else "fail", "detail": "Container build file present."},
         {"name": "Docker Compose", "status": "pass" if os.path.exists("docker-compose.yml") else "warn", "detail": "Local multi-service runner."},
+        {"name": "Compose frontend API wiring", "status": "pass" if compose_frontend_ready else "warn", "detail": "Frontend container points to backend service over the compose network." if compose_frontend_ready else "Set API_BASE=http://backend:8001 for compose frontend deployments."},
         {"name": "Environment example", "status": "pass" if os.path.exists(".env.example") else "warn", "detail": "Safe config template for demos."},
+        {"name": "Local secrets ignored", "status": "pass" if gitignore_ready else "fail", "detail": ".env and runtime state are excluded from git." if gitignore_ready else "Add .env and runtime state to .gitignore before pushing."},
+        {"name": "Docker build hygiene", "status": "pass" if dockerignore_ready else "warn", "detail": ".dockerignore excludes virtualenv, local secrets, and runtime data." if dockerignore_ready else "Update .dockerignore to exclude local secrets and runtime artifacts."},
         {"name": "Tests", "status": "pass" if os.path.exists("tests") else "fail", "detail": "Automated test folder present."},
         {"name": "GitHub Actions", "status": "pass" if os.path.exists(".github/workflows/tests.yml") else "warn", "detail": "CI workflow check."},
         {"name": "Health endpoint", "status": "pass" if health(db).get("status") in {"healthy", "degraded"} else "fail", "detail": "Backend self-check responds."},
         {"name": "Runtime database", "status": "pass" if db.query(TradeRoute).count() else "fail", "detail": "Seeded trade routes are available."},
         {"name": "Audit trail", "status": "pass" if db.query(AuditLog).count() >= 0 else "fail", "detail": "Persistent audit table is available."},
         {"name": "Response compression", "status": "pass", "detail": "GZip middleware enabled for larger JSON responses."},
+        {"name": "Production mode", "status": "pass" if production_enabled else "warn", "detail": "Production controls are active." if production_enabled else "Set APP_MODE=production or PRODUCTION_MODE=true in deployment secrets before public hosting."},
+        {"name": "Demo account guard", "status": demo_guard_status, "detail": demo_guard_detail},
     ]
     score = 100
     score -= sum(20 for check in checks if check["status"] == "fail")
@@ -4493,14 +4520,160 @@ def default_captain_ports(assessments: list[dict]) -> tuple[str | None, str | No
     return "Mumbai", "Rotterdam"
 
 
+def captain_response_window(score: float) -> str:
+    if score >= 75:
+        return "0-60 minutes"
+    if score >= 45:
+        return "0-4 hours"
+    return "Today"
+
+
+def captain_risk_projection(
+    mission_score: float,
+    incident_likelihood: float,
+    delay_pressure: float,
+    notification_pressure: float,
+    quality_score: float,
+    p1_incidents: int,
+    p1_notifications: int,
+) -> dict:
+    no_action = clamp_percent(
+        (mission_score * 0.34)
+        + (incident_likelihood * 0.24)
+        + (delay_pressure * 0.16)
+        + (notification_pressure * 0.14)
+        + (p1_incidents * 4.5)
+        + (p1_notifications * 2.5)
+        + (max(0, 100 - quality_score) * 0.04)
+    )
+    reduction = clamp_percent(9 + (mission_score * 0.12) + (p1_incidents * 2.5) + (p1_notifications * 1.2))
+    controlled = clamp_percent(no_action - reduction)
+    confidence = clamp_percent((quality_score * 0.55) + 34)
+    return {
+        "without_autopilot": no_action,
+        "with_autopilot": controlled,
+        "estimated_reduction": clamp_percent(no_action - controlled),
+        "confidence": confidence,
+    }
+
+
+def captain_decision_gates(mission: dict, priority: str) -> list[dict]:
+    gates = [
+        {
+            "gate": "AIS evidence",
+            "owner": "Operator",
+            "status": "required" if priority in {"P1", "P2"} else "watch",
+            "check": "Confirm live AIS or fallback source before release.",
+        },
+        {
+            "gate": "Route release",
+            "owner": "Command desk",
+            "status": "required" if priority == "P1" else "watch",
+            "check": "Compare safest route against the current route and document the decision.",
+        },
+        {
+            "gate": "Cargo visibility",
+            "owner": "Admin" if priority == "P1" else "Operator",
+            "status": "required" if priority == "P1" else "watch",
+            "check": "Keep sensitive cargo sanitized for Public role.",
+        },
+    ]
+    for item in (mission.get("priorities") or [])[:2]:
+        gates.append({
+            "gate": item.get("lane", "Mission pressure"),
+            "owner": "Operations",
+            "status": item.get("priority", "P3"),
+            "check": item.get("action", "Assign owner and verify evidence."),
+        })
+    return gates[:5]
+
+
+def captain_map_overlay(
+    route_plan: dict | None,
+    vessel_board: list[dict],
+    digest: dict,
+    mission: dict,
+    mission_score: float,
+    response_window: str,
+) -> dict:
+    route_rows = []
+    for option in ((route_plan or {}).get("alternatives") or [])[:5]:
+        path = option.get("geometry") or []
+        if not path:
+            continue
+        score = float(option.get("risk_score", 0) or 0) * 10
+        route_rows.append({
+            "route": option.get("route"),
+            "score": option.get("risk_score"),
+            "band": option.get("risk_band"),
+            "action": option.get("why", "Compare this route before release."),
+            "path": path,
+            "color": mission_overlay_color(score),
+            "width": 5 if option.get("recommended") else 3,
+        })
+
+    vessel_rows = []
+    for vessel in vessel_board[:8]:
+        lat = vessel.get("display_position_lat", vessel.get("position_lat"))
+        lon = vessel.get("display_position_lon", vessel.get("position_lon"))
+        if lat is None or lon is None:
+            continue
+        risk = float(vessel.get("delay_risk", 0) or 0) * 10
+        vessel_rows.append({
+            "name": vessel.get("vessel"),
+            "route": vessel.get("route"),
+            "lat": lat,
+            "lon": lon,
+            "risk": vessel.get("delay_risk"),
+            "band": vessel.get("priority"),
+            "cargo": vessel.get("cargo"),
+            "action": vessel.get("recommended_action"),
+            "motion_source": vessel.get("motion_source", "captain board"),
+            "motion_trail": vessel.get("motion_trail", []),
+            "color": mission_overlay_color(risk),
+            "radius": 190000 if risk >= 75 else 125000,
+        })
+
+    alert_rows = []
+    for index, card in enumerate((digest.get("cards") or [])[:6]):
+        target = card.get("target") or card.get("title") or card.get("source") or "Alert"
+        priority = card.get("priority") or mission_priority(float(card.get("score", 0) or 0))
+        lat, lon = overlay_point_for_label(target, index)
+        alert_rows.append({
+            "target": target,
+            "priority": priority,
+            "signals": card.get("signals", card.get("why", "")),
+            "action": card.get("action", "Review alert cluster."),
+            "lat": lat,
+            "lon": lon,
+            "color": mission_overlay_color(80 if priority == "P1" else 52 if priority == "P2" else 20, priority),
+            "radius": 240000 if priority == "P1" else 160000,
+        })
+
+    top_problem = mission.get("top_problem", {})
+    return {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "summary": {
+            "command_mode": "Emergency War Room" if mission_score >= 75 else "Command Watch" if mission_score >= 45 else "Normal Watch",
+            "active_focus": top_problem.get("lane", "AI Captain"),
+            "active_signal": top_problem.get("signal", "Captain watch"),
+            "mission_score": mission_score,
+            "response_window": response_window,
+        },
+        "routes": route_rows,
+        "vessels": vessel_rows,
+        "alerts": alert_rows,
+        "decision_gates": captain_decision_gates(mission, mission_priority(mission_score)),
+        "explainability": "AI Captain overlay uses route alternatives, delay-risk vessels, and notification clusters without rebuilding the full autopilot packet.",
+    }
+
+
 def build_ai_captain(db: Session, origin: str | None = None, destination: str | None = None) -> dict:
     mission = build_mission_control(db)
-    war_room = build_war_room(db)
-    autopilot = build_strategic_autopilot(db)
     incident_packet = build_live_incident_predictions(db)
     assessments = get_ai_route_assessments(db)
     predictions = get_vessel_predictions(limit=80, db=db).get("predictions", [])
-    digest = notification_digest(limit=180, db=db)
+    digest = mission.get("noise_reduced_digest") or notification_digest(limit=180, db=db)
     quality = get_data_quality(db)
     hardening = get_deployment_hardening(db)
     ais_status = get_aisstream_status()
@@ -4525,14 +4698,23 @@ def build_ai_captain(db: Session, origin: str | None = None, destination: str | 
 
     top_incident = (incident_packet.get("predictions") or [{}])[0]
     top_vessel = predictions[0] if predictions else {}
-    projection = autopilot.get("risk_projection", {})
     p1_incidents = len([item for item in incident_packet.get("predictions", []) if item.get("priority") == "P1"])
     p1_notifications = len([item for item in get_notifications(limit=80, db=db) if item.get("severity") == "critical"])
     mission_score = float(mission.get("mission_score", 0) or 0)
-    no_action = float(projection.get("without_autopilot", 0) or 0)
     incident_likelihood = float(top_incident.get("likelihood", 0) or 0)
     delay_pressure = float(top_vessel.get("delay_risk", 0) or 0) * 10
     notification_pressure = float(digest.get("pressure_score", 0) or 0)
+    quality_score = float(quality.get("score", 100) or 100)
+    projection = captain_risk_projection(
+        mission_score=mission_score,
+        incident_likelihood=incident_likelihood,
+        delay_pressure=delay_pressure,
+        notification_pressure=notification_pressure,
+        quality_score=quality_score,
+        p1_incidents=p1_incidents,
+        p1_notifications=p1_notifications,
+    )
+    no_action = float(projection.get("without_autopilot", 0) or 0)
     captain_score = clamp_percent(
         (mission_score * 0.25)
         + (no_action * 0.22)
@@ -4541,11 +4723,12 @@ def build_ai_captain(db: Session, origin: str | None = None, destination: str | 
         + (notification_pressure * 0.1)
         + (p1_incidents * 4.5)
         + (p1_notifications * 2.5)
-        + (max(0, 100 - float(quality.get("score", 100) or 100)) * 0.04)
+        + (max(0, 100 - quality_score) * 0.04)
     )
     verdict, order = captain_verdict(captain_score, route_plan, top_incident)
     priority = mission_priority(captain_score)
     recommended_route = (route_plan or {}).get("recommended") or {}
+    response_window = captain_response_window(captain_score)
 
     order_reasons = [
         f"Mission pressure {mission_score}/100 from {mission.get('top_problem', {}).get('lane', 'Mission Control')}.",
@@ -4591,6 +4774,16 @@ def build_ai_captain(db: Session, origin: str | None = None, destination: str | 
             "motion_source": vessel.get("motion_source"),
         })
 
+    map_overlay = captain_map_overlay(
+        route_plan=route_plan,
+        vessel_board=vessel_board,
+        digest=digest,
+        mission=mission,
+        mission_score=captain_score,
+        response_window=response_window,
+    )
+    decision_gates = captain_decision_gates(mission, priority)
+
     return {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "verdict": verdict,
@@ -4624,17 +4817,17 @@ def build_ai_captain(db: Session, origin: str | None = None, destination: str | 
         "incident_predictions": incident_packet.get("predictions", []),
         "vessel_board": vessel_board,
         "emergency_war_room": {
-            "mode": "Emergency War Room" if priority == "P1" else war_room.get("command_mode"),
-            "response_window": war_room.get("response_window"),
+            "mode": "Emergency War Room" if priority == "P1" else "Command Watch" if captain_score >= 45 else "Normal Watch",
+            "response_window": response_window,
             "steps": emergency_steps,
-            "decision_gates": war_room.get("decision_gates", []),
+            "decision_gates": decision_gates,
             "communications": [
                 "One message to fleet operators with route and AIS evidence.",
                 "One message to cargo/customer teams with sanitized delivery impact.",
                 "One admin audit note with exact decision, owner, and confidence.",
             ],
         },
-        "map_overlay": autopilot.get("map_overlay", {}),
+        "map_overlay": map_overlay,
         "trust": {
             "data_quality": quality.get("score"),
             "deployment_hardening": hardening.get("score"),
@@ -7410,7 +7603,7 @@ def global_corridor_answer_lines() -> list[str]:
 PROBLEM_SOLVER_TOPICS = {
     "route_safety": {
         "label": "Route safety",
-        "keywords": ["route", "safe", "safest", "reroute", "corridor", "voyage", "port"],
+        "keywords": ["route", "safe", "safest", "reroute", "corridor", "voyage", "port", "avoid", "sea lane", "destination"],
         "page": "AI Risk Decisions",
     },
     "vessel_eta": {
@@ -7425,12 +7618,12 @@ PROBLEM_SOLVER_TOPICS = {
     },
     "threat_alerts": {
         "label": "Threat alerts",
-        "keywords": ["threat", "pirate", "storm", "alert", "attack", "weather", "geopolitical"],
+        "keywords": ["threat", "pirate", "piracy", "hijack", "storm", "alert", "attack", "weather", "geopolitical", "war", "conflict", "sanction"],
         "page": "Threat Alerts",
     },
     "risk_forecast": {
         "label": "Risk forecast",
-        "keywords": ["forecast", "future", "tomorrow", "days", "trend", "watch"],
+        "keywords": ["forecast", "future", "tomorrow", "days", "trend", "watch", "predict", "caution", "probability"],
         "page": "Risk Forecast",
     },
     "ais_data": {
@@ -7459,6 +7652,99 @@ PROBLEM_SOLVER_TOPICS = {
         "page": "Reports",
     },
 }
+
+
+RISK_DIMENSION_RULES = [
+    {
+        "category": "Natural / Weather",
+        "keywords": ["storm", "cyclone", "weather", "typhoon", "hurricane", "monsoon", "wave", "wind", "fog", "natural"],
+        "solution": "Delay exposed movement, compare alternate corridor, verify maritime weather, and keep ETA promises conditional.",
+        "owner": "Operator",
+    },
+    {
+        "category": "Hijack / Piracy",
+        "keywords": ["hijack", "piracy", "pirate", "attack", "theft", "kidnap", "boarding", "armed"],
+        "solution": "Reroute away from piracy zones, hide sensitive cargo details, alert security, and escalate P1 cargo to Admin.",
+        "owner": "Admin + Operator",
+    },
+    {
+        "category": "War / Geopolitical",
+        "keywords": ["war", "conflict", "missile", "sanction", "geopolitical", "red sea", "black sea", "hormuz", "blockade"],
+        "solution": "Avoid contested corridors, review sanctions/legal exposure, hold high-value cargo, and use a lower-risk sea lane.",
+        "owner": "Admin",
+    },
+    {
+        "category": "AIS / Signal Integrity",
+        "keywords": ["ais", "api", "stream", "stale", "signal", "gps", "spoof", "websocket", "ssl"],
+        "solution": "Check provider status, stale signal age, bounding boxes, SSL mode, and fallback vessel projection before decisions.",
+        "owner": "Operator",
+    },
+    {
+        "category": "Cargo / Commercial Exposure",
+        "keywords": ["cargo", "gold", "petrol", "lng", "oil", "medical", "value", "manifest", "priority"],
+        "solution": "Verify cargo priority, route exposure, destination, insurance sensitivity, and P1 approval before release.",
+        "owner": "Operator",
+    },
+]
+
+
+def problem_risk_dimensions(problem: str, topic_key: str, severity: str) -> list[dict]:
+    lowered = str(problem or "").lower()
+    severity_score = {"critical": 88, "watch": 64, "normal": 32, "none": 0}.get(str(severity).lower(), 55)
+    rows = []
+    for rule in RISK_DIMENSION_RULES:
+        hits = [keyword for keyword in rule["keywords"] if keyword in lowered]
+        if not hits:
+            continue
+        score = min(100, severity_score + (len(hits) * 4))
+        rows.append({
+            "category": rule["category"],
+            "level": "Critical" if score >= 80 else "Watch" if score >= 50 else "Normal",
+            "score": score,
+            "trigger": ", ".join(hits[:4]),
+            "owner": rule["owner"],
+            "solution": rule["solution"],
+        })
+    if rows:
+        return rows[:4]
+    topic_meta = PROBLEM_SOLVER_TOPICS.get(topic_key, {})
+    return [{
+        "category": topic_meta.get("label", "Maritime operations"),
+        "level": "Critical" if severity == "critical" else "Watch" if severity == "watch" else "Normal",
+        "score": severity_score,
+        "trigger": "topic classification",
+        "owner": "Operator",
+        "solution": "Follow the generated action plan, verify live evidence, and escalate only if the severity is critical.",
+    }]
+
+
+def problem_decision_from_dimensions(dimensions: list[dict], severity: str) -> str:
+    categories = {str(row.get("category", "")).lower() for row in dimensions}
+    if severity == "critical" and any("war" in item or "hijack" in item for item in categories):
+        return "Hold or reroute until Admin approves the safer corridor."
+    if severity == "critical":
+        return "Escalate immediately and block release until the P1 checks are complete."
+    if severity == "watch":
+        return "Proceed only with watch controls and refresh live evidence before commitment."
+    return "Proceed with normal monitoring."
+
+
+def cargo_priority_from_problem(problem: str) -> str:
+    lowered = str(problem or "").lower()
+    if any(token in lowered for token in ["p1", "gold", "lng", "petrol", "oil", "medical", "high-value", "high value", "critical cargo"]):
+        return "P1"
+    if any(token in lowered for token in ["p3", "low priority", "general cargo"]):
+        return "P3"
+    return "P2"
+
+
+def avoid_tokens_from_problem(problem: str) -> str:
+    lowered = str(problem or "").lower()
+    tokens = []
+    for token in ["war", "piracy", "hijack", "security", "geopolitical", "storm", "weather", "sanction", "cyber"]:
+        if token in lowered:
+            tokens.append(token)
+    return ",".join(tokens or ["war", "piracy", "security", "geopolitical"])
 
 
 def classify_problem_topic(problem: str, requested_topic: str = "Auto") -> str | None:
@@ -7511,24 +7797,120 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         return off_topic_problem_response(problem, payload.role)
 
     meta = PROBLEM_SOLVER_TOPICS[topic_key]
-    brief = get_executive_brief(db)
-    assessments = get_ai_route_assessments(db)
-    predictions = get_vessel_predictions(limit=10, db=db)["predictions"]
-    notifications = get_notification_intelligence(limit=120, db=db)
-    operations = get_operations_intelligence_v2(db)
-    quality = get_data_quality(db)
-    ais_status = get_aisstream_status()
+    loaded_context: dict[str, object] = {}
+
+    def lazy_context(key: str, factory):
+        if key not in loaded_context:
+            loaded_context[key] = factory()
+        return loaded_context[key]
+
+    def executive_brief():
+        return lazy_context("executive brief", lambda: get_executive_brief(db))
+
+    def route_assessments():
+        return lazy_context("route assessments", lambda: get_ai_route_assessments(db))
+
+    def vessel_predictions():
+        return lazy_context("vessel predictions", lambda: get_vessel_predictions(limit=10, db=db)["predictions"])
+
+    def notification_view():
+        return lazy_context("notification intelligence", lambda: get_notification_intelligence(limit=120, db=db))
+
+    def operations_view():
+        return lazy_context("operations intelligence", lambda: get_operations_intelligence_v2(db))
+
+    def quality_view():
+        return lazy_context("data quality", lambda: get_data_quality(db))
+
+    def aisstream_view():
+        return lazy_context("AISStream status", get_aisstream_status)
+
     diagnosis = []
     evidence = []
     action_plan = []
+    route_intelligence = None
     severity = "watch"
     confidence = 72
 
     if topic_key == "route_safety":
         ports = extract_global_ports_from_question(problem)
-        global_plan = plan_global_route(ports[0], ports[1]) if len(ports) >= 2 else None
+        global_plan = None
+        sea_lane = None
+        if len(ports) >= 2:
+            cargo_priority = cargo_priority_from_problem(problem)
+            avoid = avoid_tokens_from_problem(problem)
+            global_plan = plan_global_route(ports[0], ports[1])
+            sea_lane = get_sea_lane_engine(
+                origin=ports[0],
+                destination=ports[1],
+                objective="safest",
+                cargo_priority=cargo_priority,
+                avoid=avoid,
+            )
+        assessments = route_assessments()
         top_route = assessments[0] if assessments else {}
-        if global_plan and global_plan.get("recommended"):
+        incident_packet = build_live_incident_predictions(db, limit=5)
+        top_incident = (incident_packet.get("predictions") or [{}])[0]
+        notifications = notification_view()
+        operations = operations_view()
+        ais_status = aisstream_view()
+
+        if sea_lane and sea_lane.get("recommended"):
+            recommended = sea_lane["recommended"]
+            direct = (global_plan or {}).get("direct") or {}
+            diagnosis.append(
+                f"For {sea_lane.get('origin')} to {sea_lane.get('destination')}, the safest API-backed route is {recommended.get('route')}."
+            )
+            evidence.append(
+                f"Sea-lane engine selected risk {recommended.get('risk_score')}/10 ({recommended.get('risk_band')}), "
+                f"{recommended.get('distance_nm')} nm, objective score {recommended.get('objective_score')}."
+            )
+            if direct:
+                evidence.append(
+                    f"Direct route comparison: {direct.get('risk_score')}/10, {direct.get('distance_nm')} nm."
+                )
+            for exposure in recommended.get("zone_exposures", [])[:4]:
+                evidence.append(
+                    f"Watch zone: {exposure.get('zone')} ({exposure.get('type')}) - {exposure.get('note')}"
+                )
+            evidence.append(
+                f"Live signals: AIS connected={ais_status.get('connected')}, vessels={ais_status.get('vessel_count')}, "
+                f"notification pressure={notifications.get('pressure_score')}/100, top incident={top_incident.get('category', 'None')}."
+            )
+            evidence.append(
+                f"Cargo pressure: {operations.get('cargo_priority_counts', {}).get('P1', 0)} P1 and "
+                f"{operations.get('cargo_priority_counts', {}).get('P2', 0)} P2 manifest(s)."
+            )
+            action_plan.extend(recommended.get("route_controls", []))
+            action_plan.extend([
+                f"Use {recommended.get('captain_rule', 'Operator review required')} as the dispatch rule.",
+                "Run AI Captain before final dispatch so route, vessel, cargo, AIS, and notifications are checked together.",
+                "If the route touches a war/piracy/security watch zone, keep P1 cargo on hold until Admin approval.",
+            ])
+            severity = "critical" if recommended.get("risk_score", 0) >= 7 else "watch"
+            if top_incident.get("priority") == "P1" or notifications.get("pressure_score", 0) >= 70:
+                severity = "critical"
+            confidence = 91
+            route_intelligence = {
+                "origin": sea_lane.get("origin"),
+                "destination": sea_lane.get("destination"),
+                "objective": sea_lane.get("objective"),
+                "cargo_priority": sea_lane.get("cargo_priority"),
+                "avoid_tokens": sea_lane.get("avoid_tokens"),
+                "recommended": recommended,
+                "alternatives": sea_lane.get("options", [])[:5],
+                "watch_zones": recommended.get("zone_exposures", [])[:5],
+                "controls": sea_lane.get("controls", []) + recommended.get("route_controls", []),
+                "incident_predictions": incident_packet.get("predictions", [])[:3],
+                "live_signals": {
+                    "ais_connected": ais_status.get("connected"),
+                    "ais_vessels": ais_status.get("vessel_count"),
+                    "notification_pressure": notifications.get("pressure_score"),
+                    "top_platform_route": top_route,
+                },
+                "model_note": sea_lane.get("decision_note") or (global_plan or {}).get("model_note"),
+            }
+        elif global_plan and global_plan.get("recommended"):
             recommended = global_plan["recommended"]
             diagnosis.append(f"Recommended safest global route is {recommended.get('route')}.")
             evidence.append(f"Global route risk {recommended.get('risk_score')}/10, distance {recommended.get('distance_nm')} nm.")
@@ -7545,7 +7927,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
             confidence = top_route.get("confidence", 75)
 
     elif topic_key == "vessel_eta":
-        top_vessels = predictions[:3]
+        top_vessels = vessel_predictions()[:3]
         diagnosis.append("Delay risk is concentrated in the highest ETA-risk vessels.")
         for vessel in top_vessels:
             evidence.append(f"{vessel['vessel']} near {vessel['nearest_port']}: delay risk {vessel['delay_risk']}/10, ETA {vessel['eta_hours']}h.")
@@ -7558,6 +7940,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 82
 
     elif topic_key == "cargo_exposure":
+        operations = operations_view()
         cargo_counts = operations.get("cargo_priority_counts", {})
         p1 = int(cargo_counts.get("P1", 0) or 0)
         diagnosis.append(f"Cargo exposure currently has {p1} P1 manifest(s).")
@@ -7572,6 +7955,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 78
 
     elif topic_key == "threat_alerts":
+        notifications = notification_view()
         pressure = notifications.get("pressure_score", 0)
         diagnosis.append(f"Notification pressure is {pressure}/100 ({notifications.get('pressure_band')}).")
         for item in notifications.get("top_actions", [])[:4]:
@@ -7597,6 +7981,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 76
 
     elif topic_key == "ais_data":
+        ais_status = aisstream_view()
         diagnosis.append("AISStream API key is connected." if ais_status.get("connected") else "AISStream is not fully connected.")
         evidence.append(f"Enabled={ais_status.get('enabled')}, running={ais_status.get('running')}, connected={ais_status.get('connected')}, vessels={ais_status.get('vessel_count')}.")
         if ais_status.get("last_error"):
@@ -7610,6 +7995,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 90
 
     elif topic_key == "notifications":
+        notifications = notification_view()
         diagnosis.append(f"Notification pressure is {notifications.get('pressure_band')} at {notifications.get('pressure_score')}/100.")
         for item in notifications.get("top_actions", [])[:5]:
             evidence.append(f"{item['priority']} {item['target']}: {item['why']}")
@@ -7622,6 +8008,8 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 86
 
     elif topic_key == "settings_access":
+        quality = quality_view()
+        brief = executive_brief()
         diagnosis.append(f"Current role request is being evaluated for {payload.role}.")
         evidence.append(f"Data quality {quality['score']}%, backend readiness {brief.get('readiness_score')}%.")
         action_plan.extend([
@@ -7633,6 +8021,8 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 80
 
     elif topic_key == "fleet_operations":
+        operations = operations_view()
+        brief = executive_brief()
         summary = operations.get("summary", {})
         readiness = operations.get("readiness_score", brief.get("readiness_score", 0))
         diagnosis.append(f"Fleet operations readiness is {readiness}% ({operations.get('readiness_band', 'Unknown')}).")
@@ -7654,6 +8044,7 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 83
 
     elif topic_key == "reports_quality":
+        quality = quality_view()
         deployment = get_deployment_readiness(db)
         checks = deployment.get("checks", [])
         failed_checks = [check for check in checks if str(check.get("status", "")).lower() in {"fail", "warn"}]
@@ -7670,11 +8061,33 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         confidence = 81
 
     if not diagnosis:
-        diagnosis.append(brief.get("commander_summary", "No commander summary available."))
+        diagnosis.append(executive_brief().get("commander_summary", "No commander summary available."))
     if not evidence:
-        evidence.append(f"Readiness {brief.get('readiness_score')}%, data quality {quality.get('score')}%.")
+        evidence.append(f"Readiness {executive_brief().get('readiness_score')}%, data quality {quality_view().get('score')}%.")
     if not action_plan:
         action_plan.append("Keep monitoring; no immediate corrective action was generated.")
+
+    risk_levels = problem_risk_dimensions(problem, topic_key, severity)
+    if route_intelligence and route_intelligence.get("recommended"):
+        recommended = route_intelligence["recommended"]
+        risk_levels.insert(0, {
+            "category": "Route recommendation",
+            "level": str(recommended.get("risk_band", "Watch")),
+            "score": round(float(recommended.get("risk_score", 0) or 0) * 10, 1),
+            "trigger": f"{route_intelligence.get('origin')} to {route_intelligence.get('destination')}",
+            "owner": "Operator",
+            "solution": recommended.get("captain_rule", "Use safest route controls before dispatch."),
+        })
+        for zone in route_intelligence.get("watch_zones", [])[:2]:
+            risk_levels.append({
+                "category": f"Watch zone: {zone.get('zone')}",
+                "level": "Critical" if float(zone.get("impact", 0) or 0) >= 8 else "Watch",
+                "score": round(float(zone.get("impact", 0) or 0) * 10, 1),
+                "trigger": zone.get("type", "route exposure"),
+                "owner": "Operator",
+                "solution": zone.get("note", "Review watch-zone exposure before release."),
+            })
+    decision = problem_decision_from_dimensions(risk_levels, severity)
 
     return {
         "status": "answered",
@@ -7684,6 +8097,9 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         "severity": severity,
         "confidence": round(float(confidence), 1),
         "answer": diagnosis[0],
+        "recommended_decision": decision,
+        "risk_levels": risk_levels,
+        "route_intelligence": route_intelligence,
         "diagnosis": diagnosis,
         "evidence": evidence[:8],
         "action_plan": list(dict.fromkeys(action_plan))[:8],
@@ -7692,13 +8108,9 @@ def solve_domain_problem(payload: ProblemSolverRequest, db: Session) -> dict:
         "original_problem": problem,
         "explainability": {
             "inputs": [
-                "executive brief",
-                "route assessments",
-                "vessel predictions",
-                "notification intelligence",
-                "operations intelligence",
-                "AISStream status",
-                "data quality",
+                *loaded_context.keys(),
+                "problem text",
+                "risk-dimension rules",
             ],
             "method": f"Classified the problem as {meta['label']} and selected the highest-confidence evidence available for that topic.",
             "limits": [
@@ -9652,13 +10064,21 @@ def refresh_ai_live_state():
     return packet
 
 
+def ai_live_refresh_seconds():
+    try:
+        value = float(os.getenv("AI_LIVE_REFRESH_SECONDS", "2.5") or 2.5)
+    except (TypeError, ValueError):
+        value = 2.5
+    return max(1.0, min(10.0, value))
+
+
 def ai_live_update_loop():
     while True:
         try:
             refresh_ai_live_state()
         except Exception as exc:
             logger.exception("AI live update failed: %s", exc)
-        time.sleep(1)
+        time.sleep(ai_live_refresh_seconds())
 
 
 def start_ai_live_updates():

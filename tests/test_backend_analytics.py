@@ -503,6 +503,14 @@ def test_problem_solver_is_topic_locked_and_actionable():
             ),
             db,
         )
+        route_plan_answer = solve_domain_problem(
+            ProblemSolverRequest(
+                problem="Find safest route from Mumbai to Rotterdam for P1 cargo and avoid war piracy zones",
+                topic="Auto",
+                role="Operator",
+            ),
+            db,
+        )
         off_topic = solve_domain_problem(
             ProblemSolverRequest(problem="Tell me a joke about movies", topic="Auto", role="Public"),
             db,
@@ -514,6 +522,9 @@ def test_problem_solver_is_topic_locked_and_actionable():
     assert route_answer["topic"] in {"Route safety", "AIS / live data"}
     assert route_answer["action_plan"]
     assert route_answer["open_page"]
+    assert route_plan_answer["route_intelligence"]["recommended"]
+    assert route_plan_answer["route_intelligence"]["watch_zones"]
+    assert route_plan_answer["recommended_decision"]
     assert off_topic["status"] == "off_topic"
     assert "maritime trade intelligence" in off_topic["answer"]
 

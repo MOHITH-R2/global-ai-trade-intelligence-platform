@@ -16,6 +16,7 @@ load_dotenv()
 
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 API_TIMEOUT = 8
+STATUS_TIMEOUT = 1.5
 MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
 HTTP = requests.Session()
 SESSION_QUERY_PARAM = "session_token"
@@ -46,15 +47,17 @@ def api_cache_ttl(path):
         return 18 if bool(st.session_state.get("mobile_performance_mode", False)) else 12
     if path.startswith(("/weather/maritime", "/ports/congestion")):
         return 90 if bool(st.session_state.get("mobile_performance_mode", False)) else 45
-    live_paths = (
-        "/ai/live",
+    heavy_live_paths = (
+        "/ai/captain",
         "/ai/risk-intelligence",
-        "/ai/mission-map-overlay",
         "/ai/strategic-autopilot",
         "/ai/voyage-control-tower",
-        "/ai/captain",
-        "/ai/incident-predictions",
         "/operations/inbox",
+    )
+    live_paths = (
+        "/ai/live",
+        "/ai/mission-map-overlay",
+        "/ai/incident-predictions",
         "/vessels/live",
     )
     static_paths = (
@@ -72,10 +75,12 @@ def api_cache_ttl(path):
         "/data-cleanup/summary",
         "/system/reliability",
     )
+    if path.startswith(heavy_live_paths):
+        return 20 if bool(st.session_state.get("mobile_performance_mode", False)) else 12
     if path.startswith(live_paths):
         if bool(st.session_state.get("mobile_performance_mode", False)):
-            return max(10, int(st.session_state.get("ui_refresh_seconds", 8)))
-        return max(6, int(st.session_state.get("ui_refresh_seconds", 6)))
+            return max(14, int(st.session_state.get("ui_refresh_seconds", 10)))
+        return max(10, int(st.session_state.get("ui_refresh_seconds", 10)))
     if path.startswith(static_paths):
         return 60
     if any(token in path for token in ["history", "timeline", "reports", "forecast", "predictions"]):
@@ -192,6 +197,21 @@ ROLE_PERMISSIONS = {
     "Admin": {"approve_actions", "edit_cargo", "create_alerts", "generate_reports", "manage_vessels", "tune_ais", "manage_alert_workflows", "run_scenarios", "view_quality", "view_predictions"},
     "Operator": {"approve_actions", "edit_cargo", "create_alerts", "generate_reports", "manage_vessels", "manage_alert_workflows", "run_scenarios", "view_quality", "view_predictions"},
     "Public": {"read_only"},
+}
+
+ROLE_DEMO_LOGINS = {
+    "Admin": {
+        "email": "admin@demo.app",
+        "password": "admin-demo",
+        "provider": "Admin Fingerprint",
+        "payload": {"biometric_ok": True, "phrase": "ADMIN ACCESS"},
+    },
+    "Operator": {
+        "email": "operator@demo.app",
+        "password": "operator-demo",
+        "provider": "Company SSO",
+        "payload": {"mfa_code": "123456"},
+    },
 }
 
 ROLE_SESSION_LIMITS = {
@@ -313,15 +333,13 @@ def ensure_user_context():
             "admin@demo.app": {"name": "Command Admin", "role": "Admin", "provider": "Admin Fingerprint", "password": "admin-demo"},
             "operator@demo.app": {"name": "Command Operator", "role": "Operator", "provider": "Company SSO", "password": "operator-demo"},
             "public@demo.app": {"name": "Public Guest", "role": "Public", "provider": "Email Magic Link", "password": "public-demo"},
-            "fleet@demo.app": {"name": "Legacy Operator", "role": "Operator", "provider": "Company SSO", "password": "fleet-demo"},
-            "risk@demo.app": {"name": "Legacy Operator", "role": "Operator", "provider": "Company SSO", "password": "risk-demo"},
-            "viewer@demo.app": {"name": "Legacy Public", "role": "Public", "provider": "Email Magic Link", "password": "viewer-demo"},
         }
     if "ui_refresh_seconds" not in st.session_state:
-        st.session_state.ui_refresh_seconds = 5
-    if st.session_state.get("refresh_stability_version") != 2:
+        st.session_state.ui_refresh_seconds = 10
+    if st.session_state.get("refresh_stability_version") != 4:
         st.session_state.live_command_refresh = False
-        st.session_state.refresh_stability_version = 2
+        st.session_state.ui_refresh_seconds = max(10, int(st.session_state.get("ui_refresh_seconds", 10) or 10))
+        st.session_state.refresh_stability_version = 4
     if "mobile_performance_mode" not in st.session_state:
         st.session_state.mobile_performance_mode = False
     if "map_region" not in st.session_state:
@@ -7028,11 +7046,11 @@ def show_command_copilot():
 </style>
 <div class="copilot-header">
 <div>
-<div class="copilot-title">AI Command Copilot</div>
-<div class="copilot-subtitle">Topic-locked maritime intelligence assistant. Solves complex routing, threat analysis, and fleet operations automatically.</div>
+<div class="copilot-title">AI Problem Solver</div>
+<div class="copilot-subtitle">Role-aware maritime Copilot for route safety, AIS/API issues, cargo exposure, war-zone risk, hijack/piracy risk, alerts, and deployment readiness.</div>
 <div class="solver-hero">
 <b>Strictly Operational Intelligence.</b>
-<span>Describe your scenario. The AI will cross-reference live platform data to return a structured diagnosis, severity level, and execution plan.</span>
+<span>Describe the operational problem. The AI returns a decision, risk levels, evidence, and an execution plan without drifting into unrelated chat.</span>
 </div>
 </div>
 </div>
@@ -7055,7 +7073,6 @@ def show_command_copilot():
             try:
                 with st.spinner("AI calculating safest global route..."):
                     plan = api_get(f"/copilot/global-route?origin={quote(global_origin)}&destination={quote(global_destination)}")
-                    time.sleep(0.5)
                 recommended = plan.get("recommended", {})
                 if recommended:
                     st.success(
@@ -7091,11 +7108,11 @@ def show_command_copilot():
     ]
     examples = [
         ("Route safety", "Find the safest route from Mumbai to Rotterdam and explain the watch zones."),
+        ("War risk", "War risk is rising near the Red Sea. Which safer corridor and controls should we use?"),
+        ("Hijack risk", "A high-value cargo vessel may cross a piracy or hijack watch zone. What should command do?"),
+        ("Natural risk", "A storm may hit the route before arrival. Predict the risk level and safest action."),
         ("AIS live data", "AIS feed is connected but some vessels look stale or stopped. What should I check?"),
-        ("Cargo exposure", "Which high-value cargo needs attention before route release?"),
-        ("Threat alerts", "Threat alerts are increasing. Which targets should command handle first?"),
-        ("Fleet operations", "Fleet readiness feels low. What operational queue should we clear first?"),
-        ("Reports quality", "Before exporting a CEO brief, what data quality risks should I review?"),
+        ("Deploy readiness", "Before deploying this project, what reliability, data quality, and security issues should I review?"),
     ]
     if "problem_solver_prompt" not in st.session_state:
         st.session_state.problem_solver_prompt = examples[0][1]
@@ -7122,8 +7139,8 @@ def show_command_copilot():
         )
         solve_now = st.button("Initialize AI Diagnostics", type="primary", use_container_width=True, icon=":material/psychology:")
     with guide_col:
-        st.info("ℹ️ **Capabilities:** AI handles route choices, safest corridors, AIS/API issues, cargo exposure, threats, forecasts, fleet readiness, and access roles.")
-        st.warning("⚠️ **Strict Rules:** General small talk, non-maritime questions, and unregulated access requests are actively rejected by the Copilot API.")
+        st.info("Capabilities: route choices, safest corridors, AIS/API issues, cargo exposure, natural risk, hijack/piracy, war/geopolitical problems, notifications, deployment, and access roles.")
+        st.warning("Strict rule: general small talk and non-maritime questions are rejected by the Copilot API.")
 
     if solve_now:
         if not problem.strip():
@@ -7139,7 +7156,6 @@ def show_command_copilot():
                             "role": current_role(),
                         },
                     ).json()
-                    time.sleep(0.75)
             except Exception as e:
                 show_api_error("AI Problem Solver", e)
                 return
@@ -7173,6 +7189,18 @@ def show_command_copilot():
     with metric_cols[3]:
         st.metric("Recommended View", result.get("open_page", "Command Copilot"))
 
+    decision = result.get("recommended_decision")
+    if decision:
+        st.markdown(
+            f"""
+<div class="solver-answer">
+<span class="solver-chip">Recommended Command Decision</span>
+<h3>{safe_html(decision)}</h3>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     st.markdown(
         f"""
 <div class="solver-answer">
@@ -7182,6 +7210,42 @@ def show_command_copilot():
         """,
         unsafe_allow_html=True,
     )
+
+    risk_levels = pd.DataFrame(result.get("risk_levels", []))
+    if not risk_levels.empty:
+        st.markdown("#### Risk Levels & AI Playbook")
+        display_cols = [column for column in ["category", "level", "score", "trigger", "owner", "solution"] if column in risk_levels.columns]
+        st.dataframe(risk_levels[display_cols], use_container_width=True, hide_index=True)
+
+    route_intelligence = result.get("route_intelligence") or {}
+    if route_intelligence:
+        recommended = route_intelligence.get("recommended") or {}
+        st.markdown("#### API Route Intelligence")
+        st.success(
+            f"{route_intelligence.get('origin')} to {route_intelligence.get('destination')}: "
+            f"{recommended.get('route')} | Risk {recommended.get('risk_score')}/10 "
+            f"({recommended.get('risk_band')}) | {recommended.get('distance_nm')} nm"
+        )
+        st.caption(route_intelligence.get("model_note", "Route intelligence combines platform API data and route risk controls."))
+        alternatives = pd.DataFrame(route_intelligence.get("alternatives", []))
+        if not alternatives.empty:
+            visible = [
+                column for column in [
+                    "recommended", "route", "risk_score", "risk_band", "distance_nm",
+                    "detour_ratio", "objective_score", "captain_rule", "why"
+                ]
+                if column in alternatives.columns
+            ]
+            st.dataframe(alternatives[visible], use_container_width=True, hide_index=True)
+        zone_df = pd.DataFrame(route_intelligence.get("watch_zones", []))
+        if not zone_df.empty:
+            zone_cols = [column for column in ["zone", "type", "impact", "note"] if column in zone_df.columns]
+            st.markdown("#### Watch Zones")
+            st.dataframe(zone_df[zone_cols], use_container_width=True, hide_index=True)
+        controls = route_intelligence.get("controls", [])
+        if controls:
+            st.markdown("#### Route Controls")
+            st.dataframe(pd.DataFrame({"Control": list(dict.fromkeys(controls))[:8]}), use_container_width=True, hide_index=True)
 
     diag_col, action_col = st.columns([1, 1])
     with diag_col:
@@ -7481,7 +7545,7 @@ def render_security_pills(items):
         st.caption("None")
         return
     st.markdown(
-        " ".join(f'<span class="security-pill">{item}</span>' for item in safe_items),
+        " ".join(f'<span class="security-pill">{safe_html(item)}</span>' for item in safe_items),
         unsafe_allow_html=True,
     )
 
@@ -7507,18 +7571,6 @@ def public_provider_options(auth_meta):
 def demo_account_for(email):
     ensure_user_context()
     return st.session_state.demo_accounts.get(str(email or "").strip().lower())
-
-
-def register_demo_account(email, name, role, provider, password):
-    ensure_user_context()
-    normalized = str(email or "").strip().lower()
-    st.session_state.demo_accounts[normalized] = {
-        "name": name.strip() or normalized,
-        "role": normalize_role_name(role),
-        "provider": provider,
-        "password": password,
-    }
-    return st.session_state.demo_accounts[normalized]
 
 
 def apply_auth_result(result):
@@ -7562,321 +7614,335 @@ def detected_login_role(email):
     return "Public", {}
 
 
+def quick_role_login(role):
+    role = normalize_role_name(role)
+    if role == "Public":
+        sign_in_role("Public", "Guest preview", "read-only guest", "Public Guest")
+        return {"account": {"role": "Public", "display_name": "Public Guest"}}
+
+    profile = ROLE_DEMO_LOGINS.get(role)
+    if not profile:
+        raise ValueError(f"Unsupported role: {role}")
+    payload = {
+        "email": profile["email"],
+        "password": profile["password"],
+        "role": role,
+        "provider": profile["provider"],
+        **profile.get("payload", {}),
+    }
+    result = api_post("/auth/login", payload).json()
+    apply_auth_result(result)
+    return result
+
+
 def access_label_for_role(role):
     return normalize_role_name(role)
 
 
+def login_status_snapshot():
+    status = {
+        "backend_online": False,
+        "backend_label": "Backend offline",
+        "backend_detail": f"API: {API_BASE}",
+        "production_enabled": False,
+        "demo_accounts_allowed": True,
+        "app_mode": "demo",
+    }
+    try:
+        response = HTTP.get(f"{API_BASE}/health", timeout=STATUS_TIMEOUT)
+        response.raise_for_status()
+        health = response.json()
+        status["backend_online"] = True
+        status["backend_label"] = str(health.get("status", "online")).title()
+        status["backend_detail"] = f"API: {API_BASE}"
+    except Exception as exc:
+        status["backend_detail"] = f"API unreachable at {API_BASE}: {exc}"
+
+    if status["backend_online"]:
+        try:
+            response = HTTP.get(f"{API_BASE}/settings/production-mode", timeout=STATUS_TIMEOUT)
+            response.raise_for_status()
+            production = response.json()
+            status["production_enabled"] = bool(production.get("enabled", False))
+            status["demo_accounts_allowed"] = bool(production.get("demo_accounts_allowed", True))
+            status["app_mode"] = production.get("app_mode", "demo")
+        except Exception:
+            pass
+    return status
+
+
 def render_login_gate(auth_meta):
+    status = login_status_snapshot()
+    backend_tone = "ok" if status["backend_online"] else "bad"
+    mode_tone = "warn" if status["production_enabled"] else "ok"
+    demo_blocked = status["production_enabled"] and not status["demo_accounts_allowed"]
+    demo_tone = "bad" if demo_blocked else "ok"
+    demo_label = "Demo logins blocked" if demo_blocked else "Demo logins allowed"
+
     st.markdown(
         """
         <style>
-        .login-wrapper { max-width: 800px; margin: 0 auto; padding: 2rem; }
-        .login-header { text-align: center; margin-bottom: 2rem; }
-        .login-badge-new { display: inline-block; background: rgba(34, 211, 238, 0.15); color: #22d3ee; padding: 0.4rem 1rem; border-radius: 99px; font-size: 0.8rem; font-weight: bold; letter-spacing: 0.1em; border: 1px solid rgba(34, 211, 238, 0.3); margin-bottom: 1rem; text-transform: uppercase; }
-        .login-title-new { font-size: 3rem; font-weight: 800; background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; line-height: 1.2; text-shadow: 0 4px 24px rgba(255, 255, 255, 0.1); }
-        .login-subtitle-new { color: #94a3b8; font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.5; }
-        .info-card { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 16px; padding: 1.5rem; margin-bottom: 2rem; backdrop-filter: blur(12px); text-align: center; }
-        .info-card h3 { margin-top: 0; color: #f8fafc; font-size: 1.25rem; margin-bottom: 0.5rem; }
-        .info-card p { color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1rem; }
-        .role-grid { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
-        .role-item { background: rgba(30, 41, 59, 0.5); border-radius: 12px; padding: 1rem; border: 1px solid rgba(148, 163, 184, 0.1); flex: 1; min-width: 150px; }
-        .role-item strong { display: block; color: #e2e8f0; margin-bottom: 0.25rem; font-size: 1rem; }
-        .role-item span { color: #94a3b8; font-size: 0.85rem; line-height: 1.4; }
+        .login-wrapper { max-width: 1050px; margin: 0 auto; padding: 1.4rem 0.5rem 0.6rem; }
+        .login-header { text-align: center; margin-bottom: 1.15rem; }
+        .login-badge-new { display: inline-block; background: rgba(20, 184, 166, 0.14); color: #99f6e4; padding: 0.34rem 0.78rem; border-radius: 999px; font-size: 0.78rem; font-weight: 800; letter-spacing: 0; border: 1px solid rgba(45, 212, 191, 0.28); margin-bottom: 0.75rem; text-transform: uppercase; }
+        .login-title-new { color: #f8fafc; font-size: 2.45rem; font-weight: 850; margin-bottom: 0.45rem; line-height: 1.15; }
+        .login-subtitle-new { color: #cbd5e1; font-size: 1rem; max-width: 690px; margin: 0 auto; line-height: 1.5; }
+        .login-status-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; max-width: 900px; margin: 1rem auto 0; }
+        .login-status-pill { border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); background: rgba(15, 23, 42, 0.56); padding: 0.62rem 0.72rem; color: #e2e8f0; text-align: left; }
+        .login-status-pill b { display: block; color: #f8fafc; font-size: 0.9rem; }
+        .login-status-pill span { color: #94a3b8; font-size: 0.78rem; }
+        .login-status-pill.ok { border-color: rgba(45, 212, 191, 0.34); }
+        .login-status-pill.warn { border-color: rgba(250, 204, 21, 0.42); }
+        .login-status-pill.bad { border-color: rgba(248, 113, 113, 0.46); }
+        .role-entry-card { min-height: 214px; background: rgba(15, 23, 42, 0.68); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; padding: 1rem; box-shadow: 0 16px 38px rgba(2, 6, 23, 0.22); }
+        .role-kicker { color: #99f6e4; font-size: 0.75rem; font-weight: 850; letter-spacing: 0; text-transform: uppercase; }
+        .role-entry-card h3 { color: #f8fafc; margin: 0.42rem 0; font-size: 1.22rem; }
+        .role-entry-card p { color: #cbd5e1; margin: 0.2rem 0 0.8rem; line-height: 1.45; min-height: 66px; }
+        .role-access-list { color: #94a3b8; font-size: 0.84rem; line-height: 1.55; }
+        .login-note { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.25); color: #bbf7d0; border-radius: 8px; padding: 0.78rem 0.88rem; margin: 0.95rem 0; }
         .settings-band-new { background: rgba(34, 211, 238, 0.05); border-left: 4px solid #22d3ee; padding: 1rem 1.25rem; border-radius: 0 8px 8px 0; margin: 1.5rem 0; color: #e2e8f0; }
         .settings-band-new b { color: #22d3ee; }
-        .form-container { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 16px; padding: 2rem; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2); }
+        .form-container { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(148, 163, 184, 0.15); border-radius: 8px; padding: 1.25rem; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2); }
+        @media (max-width: 760px) {
+            .login-title-new { font-size: 1.9rem; }
+            .login-status-row { grid-template-columns: 1fr; }
+            .role-entry-card { min-height: auto; }
+            .role-entry-card p { min-height: auto; }
+        }
         </style>
-        <div class="login-wrapper"><div class="login-header"><div class="login-badge-new">Secure Command Access</div><div class="login-title-new">Maritime Command OS</div><div class="login-subtitle-new">Authenticate to access the intelligence platform. The system will automatically route you based on your clearance level.</div></div><div class="info-card"><h3>Adaptive Access Architecture</h3><p>Security dynamically scales with your role profile. High-privilege actions demand step-up verification.</p><div class="role-grid"><div class="role-item"><strong>Admin Control</strong><span>Fingerprint + Passphrase<br>Full system command</span></div><div class="role-item"><strong>Operator Hub</strong><span>MFA / Passkey<br>Fleet and risk workflows</span></div><div class="role-item"><strong>Public Portal</strong><span>Social / Guest Login<br>Read-only overview</span></div></div></div></div>
+        <div class="login-wrapper"><div class="login-header"><div class="login-badge-new">Secure Command Access</div><div class="login-title-new">Maritime Command OS</div><div class="login-subtitle-new">Choose one clear role. The platform unlocks only the sections and actions allowed for that clearance.</div></div></div>
         """,
         unsafe_allow_html=True,
     )
+    st.markdown(
+        f"""
+<div class="login-status-row">
+    <div class="login-status-pill {backend_tone}">
+        <b>Backend {safe_html(status["backend_label"])}</b>
+        <span>{safe_html(status["backend_detail"])}</span>
+    </div>
+    <div class="login-status-pill {mode_tone}">
+        <b>{safe_html(str(status["app_mode"]).title())} Mode</b>
+        <span>{'Production controls active' if status["production_enabled"] else 'Local academic demo mode'}</span>
+    </div>
+    <div class="login-status-pill {demo_tone}">
+        <b>{safe_html(demo_label)}</b>
+        <span>Admin and Operator shortcuts use local demo accounts.</span>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if not status["backend_online"]:
+        st.error("Backend is offline. Start the demo with `.\run_demo.ps1 -Restart` before using Admin or Operator login.")
+    elif demo_blocked:
+        st.warning("Production mode is active, so demo Admin and Operator shortcuts are disabled. Use a real configured provider or switch back to demo mode from Settings.")
 
-    entry_options = ["Sign In", "Create Account", "Public Access"]
+    role_cards = [
+        {
+            "role": "Admin",
+            "title": "Admin Command",
+            "copy": "Full platform control for settings, users, deployment, AIS tuning, reports, and approvals.",
+            "access": ["Fingerprint confirmation", "ADMIN ACCESS phrase", "All sections unlocked"],
+            "button": "Enter Admin Demo",
+        },
+        {
+            "role": "Operator",
+            "title": "Operator Desk",
+            "copy": "Daily control room access for fleet maps, cargo exposure, risk alerts, scenarios, and reports.",
+            "access": ["Company SSO", "6-digit MFA", "Operational sections unlocked"],
+            "button": "Enter Operator Demo",
+        },
+        {
+            "role": "Public",
+            "title": "Public Viewer",
+            "copy": "Read-only presentation mode for sanitized dashboards without command actions or private cargo controls.",
+            "access": ["Google-style login", "No write access", "Dashboard only"],
+            "button": "Continue Public",
+        },
+    ]
+
+    st.markdown('<div class="login-note">Simple demo path: click a role card. Manual sign-in and account creation are still available below.</div>', unsafe_allow_html=True)
+    columns = st.columns(3)
+    for index, card in enumerate(role_cards):
+        role = card["role"]
+        is_public = role == "Public"
+        role_disabled = (not status["backend_online"] and not is_public) or (demo_blocked and not is_public)
+        icon = {
+            "Admin": ":material/admin_panel_settings:",
+            "Operator": ":material/radar:",
+            "Public": ":material/visibility:",
+        }.get(role)
+        with columns[index]:
+            st.markdown(
+                f"""
+<div class="role-entry-card">
+    <div class="role-kicker">{safe_html(role)} role</div>
+    <h3>{safe_html(card["title"])}</h3>
+    <p>{safe_html(card["copy"])}</p>
+    <div class="role-access-list">
+        {'<br>'.join(f'- {safe_html(item)}' for item in card["access"])}
+    </div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                card["button"],
+                key=f"quick_login_{role}",
+                use_container_width=True,
+                type="primary" if role == "Admin" else "secondary",
+                icon=icon,
+                disabled=role_disabled,
+            ):
+                try:
+                    with st.spinner(f"Opening {role} session..."):
+                        quick_role_login(role)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"{role} login failed: {e}")
+
+    entry_options = ["Manual Sign In", "Create Account", "Public Provider"]
     if st.session_state.get("auth_flow_mode") not in entry_options:
-        st.session_state.auth_flow_mode = "Sign In"
-        
-    st.markdown("<br>", unsafe_allow_html=True)
-    # Wrap the tabs/switch in a centered container using columns
-    _, center_col, _ = st.columns([1, 6, 1])
-    with center_col:
-        flow = render_workspace_switch("Authentication Flow", entry_options, "auth_flow_mode")
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.session_state.auth_flow_mode = "Manual Sign In"
 
-        if flow == "Sign In":
+    with st.expander("Advanced access tools", expanded=False):
+        flow = render_workspace_switch("Access tool", entry_options, "auth_flow_mode")
+
+        if flow == "Manual Sign In":
             if "login_email" not in st.session_state:
                 st.session_state.login_email = ""
             if "login_password" not in st.session_state:
                 st.session_state.login_password = ""
-                
-            with st.expander("🛠️ Quick Demo Access (Local Only)", expanded=False):
-                st.markdown("Use these shortcuts to bypass manual entry for demonstration purposes.")
-                demo_cols = st.columns(2)
-                with demo_cols[0]:
-                    if st.button("Load Admin Profile", use_container_width=True, icon="👑"):
-                        st.session_state.login_email = "admin@demo.app"
-                        st.session_state.login_password = "admin-demo"
-                        st.rerun()
-                with demo_cols[1]:
-                    if st.button("Load Operator Profile", use_container_width=True, icon="🚢"):
-                        st.session_state.login_email = "operator@demo.app"
-                        st.session_state.login_password = "operator-demo"
-                        st.rerun()
-                st.caption("ℹ️ Note: Operator MFA code can be any 6 digits (e.g., `123456`).")
 
-            st.markdown('<div class="form-container">', unsafe_allow_html=True)
-            email = st.text_input("Email Address", key="login_email", placeholder="commander@maritime.gov")
-            detected_role, detected_account = detected_login_role(email)
-            access_label = access_label_for_role(detected_role)
+            fill_admin, fill_operator, fill_public = st.columns(3)
+            with fill_admin:
+                if st.button("Fill Admin Demo", use_container_width=True, icon=":material/admin_panel_settings:"):
+                    st.session_state.login_email = "admin@demo.app"
+                    st.session_state.login_password = "admin-demo"
+                    st.rerun()
+            with fill_operator:
+                if st.button("Fill Operator Demo", use_container_width=True, icon=":material/radar:"):
+                    st.session_state.login_email = "operator@demo.app"
+                    st.session_state.login_password = "operator-demo"
+                    st.rerun()
+            with fill_public:
+                if st.button("Guest Viewer", use_container_width=True, icon=":material/visibility:"):
+                    quick_role_login("Public")
+                    st.rerun()
+
+            email = st.text_input("Email address", key="login_email", placeholder="admin@demo.app or operator@demo.app")
+            detected_role, _account = detected_login_role(email)
             policy = security_policy_for(auth_meta, detected_role)
-            
             st.markdown(
                 f"""
 <div class="settings-band-new">
-    <b>Detected Clearance:</b> {safe_html(access_label)}<br>
-    <span style="font-size: 0.9em; opacity: 0.8;">{safe_html(policy.get('risk', 'Enter your email to evaluate access policy.'))}</span>
+    <b>Detected clearance:</b> {safe_html(access_label_for_role(detected_role))}<br>
+    <span style="font-size: 0.9em; opacity: 0.8;">{safe_html(policy.get('risk', 'Enter an email to evaluate access policy.'))}</span>
 </div>
-""",
+                """,
                 unsafe_allow_html=True,
             )
-            render_security_pills(policy.get("permissions", sorted(ROLE_PERMISSIONS.get(detected_role, set()))))
 
-            with st.form("real_account_login", clear_on_submit=False):
-                st.markdown("### Authentication Details")
-                password = st.text_input("Password", key="login_password", type="password", placeholder="••••••••")
+            with st.form("manual_account_login", clear_on_submit=False):
+                password = st.text_input("Password", key="login_password", type="password")
                 biometric_ok = False
                 phrase = ""
                 mfa_code = ""
                 responsibility = True
-                
-                if detected_role == "Admin":
-                    st.markdown("#### Step-Up Verification Required")
-                    components.html(
-                        """
-                        <style>
-                            .fingerprint-panel {
-                                display: flex;
-                                align-items: center;
-                                gap: 1rem;
-                                padding: 1rem;
-                                border-radius: 12px;
-                                border: 1px solid rgba(20, 184, 166, 0.4);
-                                background: linear-gradient(135deg, rgba(20, 184, 166, 0.15), rgba(15, 23, 42, 0.8));
-                                color: #e0f2fe;
-                                font-family: "Segoe UI", sans-serif;
-                                cursor: pointer;
-                                transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                                box-shadow: 0 8px 16px rgba(0,0,0,0.2);
-                            }
-                            .fingerprint-panel:hover {
-                                background: linear-gradient(135deg, rgba(20, 184, 166, 0.25), rgba(15, 23, 42, 0.9));
-                                transform: translateY(-2px);
-                                box-shadow: 0 12px 20px rgba(0,0,0,0.3);
-                            }
-                            .fingerprint-ring {
-                                display: grid;
-                                place-items: center;
-                                width: 4rem;
-                                height: 4rem;
-                                border-radius: 50%;
-                                border: 2px dashed rgba(45, 212, 191, 0.8);
-                                color: #99f6e4;
-                                font-size: 0.8rem;
-                                font-weight: 800;
-                                letter-spacing: 1px;
-                                box-shadow: 0 0 30px rgba(20, 184, 166, 0.3) inset;
-                                transition: all 0.4s ease;
-                            }
-                            .fingerprint-panel:hover .fingerprint-ring {
-                                transform: scale(1.05);
-                                border-style: solid;
-                                box-shadow: 0 0 40px rgba(20, 184, 166, 0.5) inset, 0 0 20px rgba(20, 184, 166, 0.4);
-                            }
-                        </style>
-                        <div class="fingerprint-panel" onclick="triggerWebAuthn()">
-                            <div class="fingerprint-ring" id="ring">SCAN</div>
-                            <div>
-                                <b style="font-size: 1.1rem; color: #5eead4;">Biometric Passkey Scan</b><br>
-                                <span style="color: #94a3b8; font-size: 0.9rem;">Click to trigger secure WebAuthn challenge.</span>
-                            </div>
-                        </div>
-                        <script>
-                            async function triggerWebAuthn() {
-                                const ring = document.getElementById("ring");
-                                ring.innerText = "WAIT";
-                                ring.style.borderColor = "#fcd34d";
-                                ring.style.color = "#fcd34d";
-                                try {
-                                    const challenge = new Uint8Array(32);
-                                    window.crypto.getRandomValues(challenge);
-                                    await navigator.credentials.get({
-                                        publicKey: {
-                                            challenge: challenge,
-                                            userVerification: "discouraged",
-                                            timeout: 60000
-                                        }
-                                    });
-                                    ring.style.background = "rgba(16, 185, 129, 0.2)";
-                                    ring.style.borderColor = "#10b981";
-                                    ring.style.color = "#10b981";
-                                    ring.innerText = "VERIFIED";
-                                } catch (err) {
-                                    console.error(err);
-                                    ring.style.borderColor = "#ef4444";
-                                    ring.style.color = "#ef4444";
-                                    ring.innerText = "FAILED";
-                                    alert("Hardware verification unavailable. Please use fallback code.");
-                                }
-                            }
-                        </script>
-                        """,
-                        height=120,
-                    )
-                    biometric_ok = st.checkbox("Bypass: Acknowledge biometric verification", help="Use this if hardware scan fails in development.")
-                    phrase = st.text_input("Authorization Phrase", type="password", placeholder="Enter 'ADMIN ACCESS'")
-                    responsibility = st.checkbox("I assume full responsibility for resulting command actions.", value=False)
-                    
-                elif detected_role == "Operator":
-                    st.markdown("#### Two-Factor Authentication")
-                    mfa_code = st.text_input("Secure MFA Token", type="password", max_chars=6, placeholder="6-digit code")
-                    
-                st.markdown("<hr style='margin: 1.5rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
-                remember_device = st.checkbox("Keep session active on this terminal", value=True)
-                
-                # Make the submit button prominent
-                submitted = st.form_submit_button("Authenticate & Initialize", use_container_width=True, type="primary")
 
-            st.markdown('</div>', unsafe_allow_html=True) # Close form container
+                if detected_role == "Admin":
+                    biometric_ok = st.checkbox("Fingerprint/passkey confirmed on this trusted device")
+                    phrase = st.text_input("Admin phrase", type="password", placeholder="ADMIN ACCESS")
+                    responsibility = st.checkbox("I accept responsibility for Admin command actions.", value=False)
+                elif detected_role == "Operator":
+                    mfa_code = st.text_input("Operator MFA code", type="password", max_chars=6, placeholder="123456")
+
+                remember_device = st.checkbox("Keep session active on this terminal", value=True)
+                submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
 
             if submitted:
                 if not email.strip() or not password:
-                    st.error("⚠️ Credentials missing. Please enter email and password.")
+                    st.error("Email and password are required.")
                 elif detected_role == "Admin" and (not biometric_ok or phrase.strip().upper() != "ADMIN ACCESS" or not responsibility):
-                    st.error("🛑 Authorization Denied: Admin verification requires biometric bypass, the exact phrase 'ADMIN ACCESS', and acknowledged responsibility.")
+                    st.error("Admin requires fingerprint confirmation, the exact phrase ADMIN ACCESS, and responsibility acknowledgement.")
                 elif detected_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
-                    st.error("🛑 Authorization Denied: Invalid MFA token format. Expected 6 digits.")
+                    st.error("Operator requires a 6-digit MFA/passkey code.")
                 else:
                     try:
-                        with st.spinner("Establishing secure connection..."):
-                            payload = {
-                                "email": email,
-                                "password": password,
-                                "biometric_ok": biometric_ok,
-                                "phrase": phrase,
-                                "mfa_code": mfa_code,
-                            }
-                            result = api_post("/auth/login", payload).json()
-                            apply_auth_result(result)
-                            if not remember_device:
-                                clear_session_token()
-                        st.success("Connection Established. Initializing Command OS...")
-                        time.sleep(0.5)
+                        result = api_post("/auth/login", {
+                            "email": email,
+                            "password": password,
+                            "biometric_ok": biometric_ok,
+                            "phrase": phrase,
+                            "mfa_code": mfa_code,
+                        }).json()
+                        apply_auth_result(result)
+                        if not remember_device:
+                            clear_session_token()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Connection Failed: {e}")
+                        st.error(f"Sign in failed: {e}")
 
-            # Auxiliary actions below the form
-            st.markdown("<br>", unsafe_allow_html=True)
-            aux_col1, aux_col2 = st.columns(2)
-            with aux_col1:
-                if st.button("Recover Password", use_container_width=True):
-                    st.info("System recovery requires production mail service. In this environment, use a demo account.")
-            with aux_col2:
-                if st.button("Enter as Guest Viewer", use_container_width=True):
-                    sign_in_role("Public", "Guest preview", "guest read-only", "Guest")
-                    st.rerun()
+        elif flow == "Create Account":
+            st.info("Admin accounts are invite-only. New self-service accounts can be Operator or Public only.")
+            account_type = st.selectbox("Requested role", ["Operator", "Public"], key="signup_account_type")
+            new_role = "Operator" if account_type == "Operator" else "Public"
+            provider = st.selectbox("Provider", provider_options_for(auth_meta, new_role), key="signup_provider")
+            render_security_pills(sorted(ROLE_PERMISSIONS.get(new_role, set())) or ["read only"])
 
-        elif flow == "Public Access":
-            st.markdown('<div class="form-container">', unsafe_allow_html=True)
-            st.markdown("### Public Intelligence Portal")
-            st.info("ℹ️ Public access provides a sanitized, read-only view of global operations. Command and control features are strictly disabled.")
-            
-            st.markdown("#### Connect with Identity Provider")
-            provider_cols = st.columns(2)
+            with st.form("create_access_account", clear_on_submit=False):
+                name = st.text_input("Display name / callsign")
+                email = st.text_input("Email", placeholder="user@domain.com")
+                password = st.text_input("Password", type="password")
+                confirm_password = st.text_input("Confirm password", type="password")
+                mfa_code = ""
+                if new_role == "Operator":
+                    mfa_code = st.text_input("Register 6-digit MFA code", type="password", max_chars=6)
+                accept_policy = st.checkbox("I accept the assigned role limits.", value=False)
+                submitted = st.form_submit_button("Create Account", use_container_width=True, type="primary")
+
+            if submitted:
+                normalized = email.strip().lower()
+                if "@" not in normalized or "." not in normalized.split("@")[-1]:
+                    st.error("Enter a valid email.")
+                elif len(password) < 6 or password != confirm_password:
+                    st.error("Passwords must match and contain at least 6 characters.")
+                elif new_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
+                    st.error("Operator accounts require a numeric 6-digit MFA code.")
+                elif not accept_policy:
+                    st.error("Accept the role limits before creating the account.")
+                else:
+                    try:
+                        result = api_post("/auth/register", {
+                            "email": normalized,
+                            "display_name": name,
+                            "password": password,
+                            "role": new_role,
+                            "provider": provider,
+                            "mfa_code": mfa_code,
+                        }).json()
+                        apply_auth_result(result)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Registration failed: {e}")
+
+        else:
+            st.info("Public provider access is always read-only. Real deployment requires OAuth secrets and HTTPS callbacks.")
             providers = public_provider_options(auth_meta)
+            provider_cols = st.columns(2)
             for index, provider in enumerate(providers):
                 with provider_cols[index % 2]:
                     if st.button(provider_label(auth_meta, provider), key=f"login_social_{provider}", use_container_width=True):
                         try:
-                            with st.spinner(f"Connecting via {provider}..."):
-                                result = api_post("/auth/social-login", {"provider": provider}).json()
-                                apply_auth_result(result)
+                            result = api_post("/auth/social-login", {"provider": provider}).json()
+                            apply_auth_result(result)
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Authentication with {provider} failed: {e}")
-                            
-            st.markdown("<hr style='margin: 1.5rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
-            st.markdown("#### Anonymous Access")
-            if st.button("Continue as Anonymous Guest", use_container_width=True, type="primary", key="login_guest_direct"):
+                            st.error(f"{provider} login failed: {e}")
+            if st.button("Continue as Anonymous Guest", use_container_width=True):
                 sign_in_role("Public", "Guest preview", "guest read-only", "Anonymous User")
                 st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        elif flow == "Create Account":
-            st.markdown('<div class="form-container">', unsafe_allow_html=True)
-            st.markdown("### Personnel Registration")
-            st.warning("Admin clearances must be provisioned manually by Command. This portal registers Operator or Public profiles only.")
-            
-            account_type = st.selectbox("Requested Clearance Level", ["Operator", "Public"], key="signup_account_type")
-            new_role = "Operator" if account_type == "Operator" else "Public"
-            providers = provider_options_for(auth_meta, new_role)
-            provider = st.selectbox("Authentication Identity Provider", providers, key="signup_provider")
-            
-            st.markdown("#### Allocated Capabilities")
-            render_security_pills(sorted(ROLE_PERMISSIONS.get(new_role, set())) or ["read only"])
-            
-            with st.form("create_demo_account", clear_on_submit=False):
-                st.markdown("#### Profile Configuration")
-                col1, col2 = st.columns(2)
-                with col1:
-                    name = st.text_input("Full Name / Callsign", placeholder="e.g. John Doe")
-                with col2:
-                    email = st.text_input("Operational Email", placeholder="user@domain.com")
-                    
-                col3, col4 = st.columns(2)
-                with col3:
-                    password = st.text_input("Access Password", type="password", help="Minimum 6 characters")
-                with col4:
-                    confirm_password = st.text_input("Verify Password", type="password")
-                    
-                mfa_code = ""
-                if new_role == "Operator":
-                    st.markdown("#### Security Setup")
-                    mfa_code = st.text_input("Register 6-Digit MFA Token", type="password", max_chars=6, placeholder="e.g. 123456")
-                    
-                st.markdown("<hr style='margin: 1rem 0; opacity: 0.2;'>", unsafe_allow_html=True)
-                accept_policy = st.checkbox("I agree to the strict usage policies and acknowledge my assigned permissions.", value=False)
-                submitted = st.form_submit_button("Register & Initialize Profile", use_container_width=True, type="primary")
-                
-            if submitted:
-                normalized = email.strip().lower()
-                if "@" not in normalized or "." not in normalized.split("@")[-1]:
-                    st.error("⚠️ Invalid email format provided.")
-                elif demo_account_for(normalized):
-                    st.error("⚠️ An account with this email already exists in the local database. Please Sign In.")
-                elif len(password) < 6 or password != confirm_password:
-                    st.error("⚠️ Passwords must match and contain at least 6 characters.")
-                elif new_role == "Operator" and not (mfa_code.isdigit() and len(mfa_code) == 6):
-                    st.error("⚠️ Operator profiles require a numeric 6-digit MFA token.")
-                elif not accept_policy:
-                    st.error("⚠️ You must agree to the usage policies to proceed.")
-                else:
-                    try:
-                        with st.spinner("Provisioning profile..."):
-                            result = api_post("/auth/register", {
-                                "email": normalized,
-                                "display_name": name,
-                                "password": password,
-                                "role": new_role,
-                                "provider": provider,
-                                "mfa_code": mfa_code,
-                            }).json()
-                            apply_auth_result(result)
-                        st.success("Profile provisioned successfully. Logging in...")
-                        time.sleep(0.5)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Registration failed: {e}")
-            st.markdown('</div>', unsafe_allow_html=True)
 
 
 def show_setup_checklist_panel():
@@ -8295,17 +8361,17 @@ def show_settings():
         try:
             refresh_default = int(st.session_state.ui_refresh_seconds)
         except (TypeError, ValueError):
-            refresh_default = 5
-        refresh_default = max(3, min(20, refresh_default))
-        st.session_state.ui_refresh_seconds = st.slider("Live panel refresh seconds", 3, 20, refresh_default)
+            refresh_default = 10
+        refresh_default = max(5, min(24, refresh_default))
+        st.session_state.ui_refresh_seconds = st.slider("Live panel refresh seconds", 5, 24, refresh_default)
         st.session_state.mobile_performance_mode = st.toggle(
             "Mobile Performance Mode",
             value=bool(st.session_state.get("mobile_performance_mode", False)),
             help="Reduces live refresh pressure and lowers map rendering density for phones.",
         )
-        if st.session_state.mobile_performance_mode and st.session_state.ui_refresh_seconds < 5:
-            st.session_state.ui_refresh_seconds = 5
-            st.info("Mobile mode raised live refresh to 5 seconds to keep phones smoother.")
+        if st.session_state.mobile_performance_mode and st.session_state.ui_refresh_seconds < 12:
+            st.session_state.ui_refresh_seconds = 12
+            st.info("Mobile mode raised live refresh to 12 seconds to keep phones smoother.")
         regions = list(settings.get("available_regions", {}).keys()) or ["Global default lanes"]
         selected_region = st.selectbox("Preferred AIS region preset", regions, index=regions.index(st.session_state.map_region) if st.session_state.map_region in regions else 0)
         st.session_state.map_region = selected_region
@@ -8925,8 +8991,8 @@ def show_smart_operations_inbox():
         key="smart_inbox_mobile_mode",
     )
     st.session_state.mobile_performance_mode = bool(mobile_mode)
-    if mobile_mode and st.session_state.get("ui_refresh_seconds", 3) < 5:
-        st.session_state.ui_refresh_seconds = 5
+    if mobile_mode and st.session_state.get("ui_refresh_seconds", 3) < 12:
+        st.session_state.ui_refresh_seconds = 12
 
     refresh_col, owner_col = st.columns([0.8, 1.2])
     with refresh_col:
@@ -8934,7 +9000,7 @@ def show_smart_operations_inbox():
     with owner_col:
         st.caption("When enabled, this page reloads on your selected refresh interval so live AIS and inbox pressure stay current.")
     if live_refresh:
-        seconds = max(5 if mobile_mode else 3, int(st.session_state.get("ui_refresh_seconds", 5)))
+        seconds = max(12 if mobile_mode else 10, int(st.session_state.get("ui_refresh_seconds", 10)))
         components.html(
             f"<script>setTimeout(() => window.parent.location.reload(), {seconds * 1000});</script>",
             height=0,
