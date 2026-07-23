@@ -96,7 +96,6 @@ from backend.main import (
     validate_auth_session,
 )
 from database.connection import SessionLocal
-from database.models import TradeRoute
 
 
 def test_health_returns_service_details():
@@ -167,12 +166,12 @@ def test_operational_intelligence_v2_shapes():
     assert isinstance(timeline, list)
 
 
-def test_productization_endpoints_shape():
+def test_productization_endpoints_shape(seeded_ids):
     db = SessionLocal()
     try:
         settings = get_runtime_settings()
         notifications = get_notifications(db=db)
-        alternatives = get_route_alternatives(route_id=1, db=db)
+        alternatives = get_route_alternatives(route_id=seeded_ids["route_id"], db=db)
         manifest = upsert_cargo_manifest(
             CargoManifestUpsert(
                 vessel_identifier="test-vessel",
@@ -434,12 +433,11 @@ def test_strategic_autopilot_plan_and_execution_shapes():
     assert executed["record"]
 
 
-def test_audit_notifications_optimizer_and_explainability_shapes():
+def test_audit_notifications_optimizer_and_explainability_shapes(seeded_ids):
     db = SessionLocal()
     try:
         assessments = get_ai_route_assessments(db)
-        route_id = db.query(TradeRoute).order_by(TradeRoute.id).first().id
-        optimizer = get_route_optimizer(route_id=route_id, db=db)
+        optimizer = get_route_optimizer(route_id=seeded_ids["route_id"], db=db)
         notification_intel = get_notification_intelligence(db=db)
         audit = get_audit_log(db=db)
     finally:
@@ -453,14 +451,14 @@ def test_audit_notifications_optimizer_and_explainability_shapes():
     assert "events" in audit
 
 
-def test_runtime_smart_report_and_alert_workflow_shapes():
+def test_runtime_smart_report_and_alert_workflow_shapes(seeded_ids):
     db = SessionLocal()
     try:
         settings = update_runtime_settings(RuntimeSettingsUpdate(max_vessels=12, stale_seconds=900))
         smart = generate_smart_report(brief_type="CEO brief", db=db)
-        alert_id = get_alert_workflows(db=db)[0]["alert_id"]
+        workflows = get_alert_workflows(db=db)
         workflow = update_alert_workflow(
-            alert_id,
+            seeded_ids["alert_id"],
             AlertWorkflowUpdate(status="investigating", owner="Tester", note="Test workflow update."),
             db=db,
         )
@@ -469,6 +467,7 @@ def test_runtime_smart_report_and_alert_workflow_shapes():
 
     assert "applied" in settings
     assert smart["report_id"]
+    assert workflows
     assert workflow["workflow_status"] == "investigating"
 
 
