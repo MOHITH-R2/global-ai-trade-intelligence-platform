@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 from database.connection import get_db, SessionLocal, engine
+from database.init_db import create_database
 from database.models import (
     AIAction,
     AISPositionHistory,
@@ -1162,12 +1163,7 @@ def auth_provider_allowed(role: str, provider: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        ensure_demo_user_accounts(db)
-    finally:
-        db.close()
+    initialize_database()
     start_ai_live_updates()
     yield
 
@@ -1178,17 +1174,37 @@ AI_LIVE_LOCK = threading.Lock()
 APP_STARTED_AT = datetime.datetime.now(datetime.timezone.utc)
 LAST_OPERATIONAL_PERSIST_AT = 0.0
 OPERATIONAL_PERSIST_LOCK = threading.Lock()
-Base.metadata.create_all(bind=engine)
-db = SessionLocal()
-try:
-    ensure_demo_user_accounts(db)
-finally:
-    db.close()
+
+
+def initialize_database():
+    create_database()
+    db = SessionLocal()
+    try:
+        ensure_demo_user_accounts(db)
+    finally:
+        db.close()
+
+
+initialize_database()
+
+
+def configured_cors_origins() -> list[str]:
+    raw_origins = os.getenv("CORS_ORIGINS", "").strip()
+    origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    for name in ("PUBLIC_BASE_URL", "FRONTEND_BASE_URL"):
+        value = os.getenv(name, "").strip()
+        if value and value not in origins:
+            origins.append(value)
+    if origins:
+        return origins
+    if production_mode_enabled():
+        return []
+    return ["*"]
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify allowed origins
+    allow_origins=configured_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3876,9 +3892,18 @@ def _get_deployment_readiness(db: Session):
         and contains_text(".dockerignore", ".env")
         and contains_text(".dockerignore", ".runtime/")
         and contains_text(".dockerignore", "venv/")
+        and contains_text(".dockerignore", "database/*.db")
     )
     gitignore_ready = contains_text(".gitignore", ".env") and contains_text(".gitignore", ".runtime/")
     compose_frontend_ready = contains_text("docker-compose.yml", "API_BASE: http://backend:8001")
+    docker_port_ready = contains_text("Dockerfile", "${PORT:-8001}")
+    docker_healthcheck_ready = contains_text("Dockerfile", "HEALTHCHECK") and contains_text("Dockerfile", "/health")
+    python_runtime_ready = os.path.exists(".python-version") and contains_text(".python-version", "3.12")
+    production_env_template_ready = os.path.exists(".env.production.example")
+    cors_origins = configured_cors_origins()
+    cors_status = "pass" if cors_origins else "warn"
+    if production_enabled and cors_origins == ["*"]:
+        cors_status = "warn"
     if production_enabled:
         demo_guard_status = "pass" if not demo_accounts_allowed() else "warn"
         demo_guard_detail = "Demo accounts are blocked in production." if not demo_accounts_allowed() else "ALLOW_DEMO_ACCOUNTS_IN_PRODUCTION is enabled; turn it off for public hosting."
@@ -3889,7 +3914,12 @@ def _get_deployment_readiness(db: Session):
         {"name": "Dockerfile", "status": "pass" if os.path.exists("Dockerfile") else "fail", "detail": "Container build file present."},
         {"name": "Docker Compose", "status": "pass" if os.path.exists("docker-compose.yml") else "warn", "detail": "Local multi-service runner."},
         {"name": "Compose frontend API wiring", "status": "pass" if compose_frontend_ready else "warn", "detail": "Frontend container points to backend service over the compose network." if compose_frontend_ready else "Set API_BASE=http://backend:8001 for compose frontend deployments."},
+        {"name": "Container PORT support", "status": "pass" if docker_port_ready else "warn", "detail": "Docker CMD honors provider PORT." if docker_port_ready else "Use the platform PORT environment variable in the container command."},
+        {"name": "Container healthcheck", "status": "pass" if docker_healthcheck_ready else "warn", "detail": "Docker healthcheck probes /health." if docker_healthcheck_ready else "Add a container healthcheck that probes /health."},
+        {"name": "Python runtime pin", "status": "pass" if python_runtime_ready else "warn", "detail": "Python 3.12 is pinned for deploy/runtime parity." if python_runtime_ready else "Add a Python runtime pin matching Docker and CI."},
         {"name": "Environment example", "status": "pass" if os.path.exists(".env.example") else "warn", "detail": "Safe config template for demos."},
+        {"name": "Production env template", "status": "pass" if production_env_template_ready else "warn", "detail": "Production secret template is available." if production_env_template_ready else "Add a production env template for hosted secrets."},
+        {"name": "CORS origins", "status": cors_status, "detail": ", ".join(cors_origins) if cors_origins else "Set CORS_ORIGINS or PUBLIC_BASE_URL for hosted frontends."},
         {"name": "Local secrets ignored", "status": "pass" if gitignore_ready else "fail", "detail": ".env and runtime state are excluded from git." if gitignore_ready else "Add .env and runtime state to .gitignore before pushing."},
         {"name": "Docker build hygiene", "status": "pass" if dockerignore_ready else "warn", "detail": ".dockerignore excludes virtualenv, local secrets, and runtime data." if dockerignore_ready else "Update .dockerignore to exclude local secrets and runtime artifacts."},
         {"name": "Tests", "status": "pass" if os.path.exists("tests") else "fail", "detail": "Automated test folder present."},

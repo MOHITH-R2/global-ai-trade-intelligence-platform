@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 
 load_dotenv()
 
-API_BASE = os.getenv("API_BASE", "http://localhost:8000")
+API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8001")
 API_TIMEOUT = 8
 STATUS_TIMEOUT = 1.5
 MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"

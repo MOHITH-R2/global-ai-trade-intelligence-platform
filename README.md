@@ -159,17 +159,18 @@ Set `APP_MODE=production` in deployment secrets to persist production controls a
    pip install -r requirements.txt
    ```
 5. Copy `.env.example` to `.env` and adjust values if needed.
-6. Initialize the database:
+6. Initialize the database if you want to pre-create local data:
    ```powershell
    python -m database.init_db
    ```
+   The backend also initializes and seeds a fresh runtime database on startup.
 
 ## Run the Backend
 From the project root:
 ```powershell
-uvicorn backend.main:app --reload
+uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
 ```
-Open http://127.0.0.1:8000.
+Open http://127.0.0.1:8001.
 
 ## Run the Streamlit App
 From the project root:
@@ -208,6 +209,30 @@ docker compose up --build
 
 Backend: http://127.0.0.1:8001  
 Frontend: http://127.0.0.1:8502
+
+The Compose file treats `.env` as optional for local demos, waits for the backend health check before starting Streamlit, and keeps writable SQLite/runtime state in `.runtime`.
+
+## Deployment
+Use the Dockerfile for backend-style web services. It runs `backend.main:app`, honors the platform `PORT` variable, and checks `/health`.
+
+For a two-service deployment, create:
+- Backend service: `python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+- Frontend service: `python -m streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT`
+
+Set these deployment secrets:
+- `APP_MODE=production`
+- `PRODUCTION_MODE=true`
+- `ALLOW_DEMO_ACCOUNTS_IN_PRODUCTION=false`
+- `API_BASE=https://your-backend-url`
+- `PUBLIC_BASE_URL=https://your-frontend-url`
+- `CORS_ORIGINS=https://your-frontend-url`
+- `AUTH_DEMO_SALT=<long random secret>`
+- `DATABASE_URL=<postgresql url>` for persistent multi-user data
+
+Use `.env.production.example` as the production secret checklist. After deployment, confirm:
+- Backend `/health` returns `status: healthy`
+- Backend `/deployment/readiness` has no `fail` checks
+- Frontend `/_stcore/health` returns healthy
 
 ## Testing
 Run the test suite with:

@@ -36,13 +36,14 @@ def create_database():
                 ))
 
         if db.query(RiskLog).count() == 0:
+            now = datetime.datetime.now(datetime.timezone.utc)
             for i in range(20):
                 route_id = (i % 5) + 1
                 risk_score = 5 + (i % 5)
                 db.add(RiskLog(
                     route_id=route_id,
                     risk_score=risk_score,
-                    timestamp=datetime.datetime.utcnow() - datetime.timedelta(days=i),
+                    timestamp=now - datetime.timedelta(days=i),
                 ))
 
         db.commit()

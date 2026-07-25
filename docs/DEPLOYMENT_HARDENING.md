@@ -5,12 +5,25 @@ This project is still demo-friendly, but it now has a clearer production path.
 ## Before Public Deployment
 
 - Set `PUBLIC_BASE_URL` to an HTTPS origin.
+- Set `CORS_ORIGINS` to the deployed frontend origin.
+- Set `APP_MODE=production` or `PRODUCTION_MODE=true`.
 - Move `AISSTREAM_API_KEY`, OAuth secrets, OIDC secrets, and WebAuthn settings into deployment secret storage.
+- Keep `AISSTREAM_ALLOW_INSECURE_SSL=false`.
+- Use a persistent PostgreSQL `DATABASE_URL` for real multi-user deployments.
 - Use real OAuth/OIDC callbacks for Google, Facebook, Instagram, Apple, Discord, Microsoft/Xbox, and Company SSO.
 - Back Admin fingerprint with WebAuthn or a trusted identity provider.
 - Run database migrations with Alembic instead of relying only on `Base.metadata.create_all`.
 - Keep `Public Visitor` read-only and sanitized.
 - Review `/deployment/hardening` until warnings are resolved.
+- Review `/deployment/readiness` after every deploy.
+
+## Container Notes
+
+- The Dockerfile runs the FastAPI backend and honors the platform `PORT` variable.
+- Docker Compose runs two services: backend on `8001` and Streamlit on `8502`.
+- Compose waits for backend `/health` before starting the frontend.
+- Fresh runtime databases are seeded at backend startup, so deployments do not depend on a checked-in SQLite file.
+- Local `.env`, SQLite files, report exports, and ML artifacts are excluded from Docker images.
 
 ## Useful Commands
 
